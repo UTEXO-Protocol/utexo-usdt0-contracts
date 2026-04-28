@@ -1,0 +1,6 @@
+# Foundry build artifacts
+out/
+cache/
+
+# Environment — never commit secrets
+.env
