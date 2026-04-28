@@ -4,3 +4,9 @@
 [submodule "lib/utexo-smart-contracts"]
 	path = lib/utexo-smart-contracts
 	url = https://github.com/UTEXO-Protocol/utexo-smart-contracts.git
+[submodule "ethereum/lib/openzeppelin-contracts"]
+	path = ethereum/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts.git
+[submodule "ethereum/lib/LayerZero-v2"]
+	path = ethereum/lib/LayerZero-v2
+	url = https://github.com/LayerZero-Labs/LayerZero-v2.git
