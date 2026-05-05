@@ -9,14 +9,11 @@ import { IOAppComposer }      from '@layerzerolabs/lz-evm-oapp-v2/contracts/oapp
 import { ILayerZeroComposer } from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroComposer.sol';
 import { OFTComposeMsgCodec } from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/libs/OFTComposeMsgCodec.sol';
 
+import { IOFT, SendParam }                  from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
+import { MessagingFee, MessagingReceipt }   from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
+
 import { IUtexoLZAdapter } from './interfaces/IUtexoLZAdapter.sol';
 import { IBridge }         from './interfaces/IBridge.sol';
-import {
-    IOFT,
-    SendParam,
-    MessagingFee,
-    MessagingReceipt
-} from './interfaces/IOFT.sol';
 
 /// @title UtexoLZAdapter
 /// @notice Bidirectional adapter between the Utexo `Bridge` (on Arbitrum) and the

@@ -5,14 +5,10 @@ import { IERC20 }    from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
 import { ReentrancyGuard } from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
 
+import { IOFT, SendParam }                from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
+import { MessagingFee, MessagingReceipt } from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
+
 import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol';
-import {
-    IOFT,
-    SendParam,
-    MessagingFee,
-    MessagingReceipt,
-    OFTReceipt
-} from './interfaces/IOFT.sol';
 
 /// @title UtexoSourceEntrypoint
 /// @notice Utexo's user-facing deposit contract on source chains (Ethereum, OP, Base, …).

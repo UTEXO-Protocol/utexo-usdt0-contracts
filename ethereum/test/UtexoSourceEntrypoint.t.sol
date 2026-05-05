@@ -5,7 +5,6 @@ import { Test } from 'forge-std/Test.sol';
 
 import { UtexoSourceEntrypoint } from '../src/UtexoSourceEntrypoint.sol';
 import { IUtexoSourceEntrypoint } from '../src/interfaces/IUtexoSourceEntrypoint.sol';
-import { SendParam, MessagingFee } from '../src/interfaces/IOFT.sol';
 
 import { MockERC20 } from './helpers/MockERC20.sol';
 import { MockOFT }   from './helpers/MockOFT.sol';

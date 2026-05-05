@@ -5,18 +5,22 @@ import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import {
     IOFT,
     SendParam,
-    MessagingFee,
-    MessagingReceipt,
+    OFTLimit,
+    OFTFeeDetail,
     OFTReceipt
-} from '../../src/interfaces/IOFT.sol';
+} from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
+import {
+    MessagingFee,
+    MessagingReceipt
+} from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
 
 /// @title MockOFT
-/// @notice Minimal OFT stub for testing the Utexo source entrypoint in isolation.
-///         Records the last `send()` call so tests can assert that `SendParam` was
-///         forwarded byte-for-byte. Burns the pulled tokens to simulate the cross-
-///         chain lock.
+/// @notice Minimal OFT stub for testing the Utexo source entrypoint and adapter in
+///         isolation. Records the last `send()` call so tests can assert that
+///         `SendParam` was forwarded byte-for-byte. Pulls the tokens to simulate the
+///         cross-chain lock.
 contract MockOFT is IOFT {
-    address public immutable token;
+    address public immutable override token;
 
     /// Native fee the stub quotes and expects on `send()`.
     uint256 public nativeFeeQuote;
@@ -54,6 +58,35 @@ contract MockOFT is IOFT {
     function setSendReverts(bool v) external {
         sendReverts = v;
     }
+
+    // -- IOFT identity stubs ---------------------------------------------------
+
+    function oftVersion() external pure override returns (bytes4 interfaceId, uint64 version) {
+        return (type(IOFT).interfaceId, 1);
+    }
+
+    function approvalRequired() external pure override returns (bool) {
+        return true;
+    }
+
+    function sharedDecimals() external pure override returns (uint8) {
+        return 6;
+    }
+
+    function quoteOFT(SendParam calldata sendParam)
+        external
+        pure
+        override
+        returns (OFTLimit memory, OFTFeeDetail[] memory, OFTReceipt memory)
+    {
+        return (
+            OFTLimit({ minAmountLD: 0, maxAmountLD: type(uint256).max }),
+            new OFTFeeDetail[](0),
+            OFTReceipt({ amountSentLD: sendParam.amountLD, amountReceivedLD: sendParam.amountLD })
+        );
+    }
+
+    // -- Quote / Send ----------------------------------------------------------
 
     function quoteSend(SendParam calldata, bool)
         external
