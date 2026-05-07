@@ -5,7 +5,6 @@ import { Test } from 'forge-std/Test.sol';
 
 import { UtexoSourceEntrypoint } from '../src/UtexoSourceEntrypoint.sol';
 import { IUtexoSourceEntrypoint } from '../src/interfaces/IUtexoSourceEntrypoint.sol';
-import { SendParam, MessagingFee } from '../src/interfaces/IOFT.sol';
 
 import { MockERC20 } from './helpers/MockERC20.sol';
 import { MockOFT }   from './helpers/MockOFT.sol';
@@ -24,7 +23,7 @@ contract UtexoSourceEntrypointTest is Test {
 
     // -- Constants ------------------------------------------------------------
     uint32  constant DST_EID = 30110; // Arbitrum LayerZero eid
-    bytes32 constant COMPOSER = bytes32(uint256(uint160(0xC0d1e0000000000000000000000000000000CAfe)));
+    bytes32 constant LZ_ADAPTER = bytes32(uint256(uint160(0xC0d1e0000000000000000000000000000000CAfe)));
     uint256 constant NATIVE_FEE = 0.01 ether;
 
     // -- Actors ---------------------------------------------------------------
@@ -44,7 +43,7 @@ contract UtexoSourceEntrypointTest is Test {
             address(token),
             address(oft),
             DST_EID,
-            COMPOSER
+            LZ_ADAPTER
         );
 
         token.mint(user, 1_000_000e6);
@@ -59,26 +58,26 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(entrypoint.token(),          address(token), 'token');
         assertEq(entrypoint.oft(),            address(oft),   'oft');
         assertEq(uint256(entrypoint.dstEid()), DST_EID,       'dstEid');
-        assertEq(entrypoint.bridgeComposer(), COMPOSER,       'composer');
+        assertEq(entrypoint.lzAdapter(),      LZ_ADAPTER,     'lzAdapter');
     }
 
     function test_constructor_revertsOnZeroToken() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidTokenAddress.selector);
-        new UtexoSourceEntrypoint(address(0), address(oft), DST_EID, COMPOSER);
+        new UtexoSourceEntrypoint(address(0), address(oft), DST_EID, LZ_ADAPTER);
     }
 
     function test_constructor_revertsOnZeroOft() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidOftAddress.selector);
-        new UtexoSourceEntrypoint(address(token), address(0), DST_EID, COMPOSER);
+        new UtexoSourceEntrypoint(address(token), address(0), DST_EID, LZ_ADAPTER);
     }
 
     function test_constructor_revertsOnZeroEid() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidDstEid.selector);
-        new UtexoSourceEntrypoint(address(token), address(oft), 0, COMPOSER);
+        new UtexoSourceEntrypoint(address(token), address(oft), 0, LZ_ADAPTER);
     }
 
-    function test_constructor_revertsOnZeroComposer() public {
-        vm.expectRevert(IUtexoSourceEntrypoint.InvalidBridgeComposer.selector);
+    function test_constructor_revertsOnZeroLZAdapter() public {
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
         new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, bytes32(0));
     }
 
@@ -111,7 +110,7 @@ contract UtexoSourceEntrypointTest is Test {
         // OFT received tokens and the immutable routing params.
         assertEq(token.balanceOf(address(oft)), p.amountLD, 'oft holds tokens');
         assertEq(uint256(oft.lastDstEid()), DST_EID,       'dstEid forwarded');
-        assertEq(oft.lastTo(),              COMPOSER,      'to forwarded');
+        assertEq(oft.lastTo(),              LZ_ADAPTER,      'to forwarded');
         assertEq(oft.lastAmountLD(),        p.amountLD,    'amount forwarded');
         assertEq(oft.lastMinAmountLD(),     p.minAmountLD, 'minAmount forwarded');
         assertEq(oft.lastMsgValue(),        NATIVE_FEE,    'msg.value forwarded');

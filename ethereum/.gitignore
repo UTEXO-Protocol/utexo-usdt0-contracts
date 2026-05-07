@@ -4,3 +4,5 @@ cache/
 
 # Environment — never commit secrets
 .env
+
+.DS_Store

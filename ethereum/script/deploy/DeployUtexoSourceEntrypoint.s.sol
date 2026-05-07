@@ -16,30 +16,30 @@ import { UtexoSourceEntrypoint } from '../../src/UtexoSourceEntrypoint.sol';
 ///   OFT_ADDRESS          — USDT0 OFT (adapter or native) on this source chain
 ///   DST_EID              — LayerZero endpoint id of the destination chain
 ///                          (Arbitrum = 30110)
-///   BRIDGE_COMPOSER      — BridgeComposer address on the destination chain,
+///   LZ_ADAPTER           — UtexoLZAdapter address on the destination chain,
 ///                          left-padded to 32 bytes (bytes32)
-///                          e.g. 0x000000000000000000000000<BridgeComposer address>
+///                          e.g. 0x000000000000000000000000<UtexoLZAdapter address>
 ///
 /// Usage:
 ///   forge script script/deploy/DeployUtexoSourceEntrypoint.s.sol \
 ///     --rpc-url $RPC_URL --broadcast --verify
 contract DeployUtexoSourceEntrypoint is Script {
     function run() external returns (UtexoSourceEntrypoint entrypoint) {
-        uint256 pk              = vm.envUint('PRIVATE_KEY');
-        address token           = vm.envAddress('TOKEN_ADDRESS');
-        address oft             = vm.envAddress('OFT_ADDRESS');
-        uint32  dstEid          = uint32(vm.envUint('DST_EID'));
-        bytes32 bridgeComposer  = vm.envBytes32('BRIDGE_COMPOSER');
+        uint256 pk         = vm.envUint('PRIVATE_KEY');
+        address token      = vm.envAddress('TOKEN_ADDRESS');
+        address oft        = vm.envAddress('OFT_ADDRESS');
+        uint32  dstEid     = uint32(vm.envUint('DST_EID'));
+        bytes32 lzAdapter  = vm.envBytes32('LZ_ADAPTER');
 
         vm.startBroadcast(pk);
-        entrypoint = new UtexoSourceEntrypoint(token, oft, dstEid, bridgeComposer);
+        entrypoint = new UtexoSourceEntrypoint(token, oft, dstEid, lzAdapter);
         vm.stopBroadcast();
 
         console2.log('UtexoSourceEntrypoint deployed at:', address(entrypoint));
-        console2.log('Token:          ', entrypoint.token());
-        console2.log('OFT:            ', entrypoint.oft());
-        console2.log('DstEid:         ', entrypoint.dstEid());
-        console2.log('BridgeComposer: ');
-        console2.logBytes32(entrypoint.bridgeComposer());
+        console2.log('Token:     ', entrypoint.token());
+        console2.log('OFT:       ', entrypoint.oft());
+        console2.log('DstEid:    ', entrypoint.dstEid());
+        console2.log('LZAdapter: ');
+        console2.logBytes32(entrypoint.lzAdapter());
     }
 }

@@ -18,7 +18,7 @@ lib/
   Source chain (Ethereum / OP / Base / …)
   ┌──────────────────────────────────────────────────────────────┐
   │                                                              │
-  │   User ──► UtexoSourceEntrypoint ──► USDT0 OFT              │
+  │   User ──► UtexoSourceEntrypoint ──► USDT0 OFT               │
   │                                           │                  │
   └───────────────────────────────────────────┼──────────────────┘
                                               │ LayerZero V2
@@ -26,7 +26,7 @@ lib/
   Arbitrum
   ┌──────────────────────────────────────────────────────────────┐
   │                                                              │
-  │   BridgeComposer ──► Bridge ◀── MultisigProxy (TEE + Fed)   │
+  │   UtexoLZAdapter ──► Bridge ◀── MultisigProxy (TEE + Fed)    │
   │                          │                                   │
   │                   CommissionManager                          │
   │                          ▲                                   │
@@ -39,8 +39,8 @@ lib/
 
 1. The user calls `UtexoSourceEntrypoint.deposit()` on the source chain, paying the LayerZero native fee.
 2. The entrypoint pulls the user's tokens and forwards them into the USDT0 OFT via `OFT.send()`, attaching a `composeMsg` produced by the Utexo backend.
-3. LayerZero delivers the tokens to Arbitrum and triggers `BridgeComposer.lzCompose()`.
-4. `BridgeComposer` calls `Bridge.fundsIn()` on Arbitrum, locking the funds. The Utexo backend then initiates the RGB-side release.
+3. LayerZero delivers the tokens to Arbitrum and triggers `UtexoLZAdapter.lzCompose()`.
+4. `UtexoLZAdapter` calls `Bridge.fundsIn()` on Arbitrum, locking the funds. The Utexo backend then initiates the RGB-side release.
 
 ## Contracts
 
@@ -53,12 +53,11 @@ Deployed once per source chain. Stateless, non-upgradeable — all routing param
 | `token` | ERC-20 pulled from the user (canonical USDT on Ethereum; USDT0 on other chains) |
 | `oft` | USDT0 OFT (adapter or native) on this source chain |
 | `dstEid` | LayerZero endpoint id of the destination chain (Arbitrum = 30110) |
-| `bridgeComposer` | `BridgeComposer` address on the destination chain, encoded as `bytes32` |
+| `lzAdapter` | `UtexoLZAdapter` address on the destination chain, encoded as `bytes32` |
 
 Key properties:
 - Re-quotes the LayerZero fee on-chain — protects against stale off-chain quotes.
 - Surplus `msg.value` is refunded to the caller.
-- Token residue is asserted to be zero after every call — defence-in-depth against OFT under-consumption.
 - No owner, no pause, no admin functions. Upgrade = redeploy.
 
 ## Prerequisites
@@ -106,7 +105,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `TOKEN_ADDRESS` | ERC-20 to pull from users |
 | `OFT_ADDRESS` | USDT0 OFT on this source chain |
 | `DST_EID` | LayerZero endpoint id of destination (Arbitrum = 30110) |
-| `BRIDGE_COMPOSER` | `BridgeComposer` address on destination, left-padded to `bytes32` |
+| `LZ_ADAPTER` | `UtexoLZAdapter` address on destination, left-padded to `bytes32` |
 
 ```sh
 forge script script/deploy/DeployUtexoSourceEntrypoint.s.sol \
@@ -117,6 +116,6 @@ The contract is stateless — no ownership transfer is needed after deployment.
 
 ## Post-deployment checklist
 
-1. Verify immutables: `token`, `oft`, `dstEid`, `bridgeComposer` match expected values.
+1. Verify immutables: `token`, `oft`, `dstEid`, `lzAdapter` match expected values.
 2. Call `quote(params)` to confirm the OFT is reachable and returns a non-zero fee.
 3. Do a test `deposit()` with a small amount on testnet to confirm token flow and event emission.

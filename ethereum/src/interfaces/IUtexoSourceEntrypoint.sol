@@ -15,8 +15,8 @@ interface IUtexoSourceEntrypoint {
     ///                     as a slippage guard against OFT-side fees.
     /// @param extraOptions LayerZero executor options encoding `lzReceive` / `lzCompose`
     ///                     gas budgets and the destination-side `msg.value` forwarded
-    ///                     into `BridgeComposer.lzCompose`. Produced by the backend.
-    /// @param composeMsg   Opaque payload consumed by `BridgeComposer` on destination.
+    ///                     into `UtexoLZAdapter.lzCompose`. Produced by the backend.
+    /// @param composeMsg   Opaque payload consumed by `UtexoLZAdapter` on destination.
     ///                     Produced by the backend; this contract never inspects it.
     struct DepositParams {
         uint256 amountLD;
@@ -31,12 +31,11 @@ interface IUtexoSourceEntrypoint {
 
     error InvalidTokenAddress();
     error InvalidOftAddress();
-    error InvalidBridgeComposer();
+    error InvalidLZAdapter();
     error InvalidDstEid();
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
-    error TokenResidue(uint256 remaining);
 
     // =========================================================================
     // Events
@@ -47,7 +46,7 @@ interface IUtexoSourceEntrypoint {
     ///                   the destination chain.
     /// @param user       Address whose tokens were pulled and charged for the LZ fee.
     /// @param amountLD   Amount of `token` forwarded into the OFT (gross, pre-OFT-fee).
-    /// @param composeMsg Opaque payload forwarded to `BridgeComposer`.
+    /// @param composeMsg Opaque payload forwarded to `UtexoLZAdapter`.
     event Deposit(
         bytes32 indexed guid,
         address indexed user,
@@ -62,7 +61,7 @@ interface IUtexoSourceEntrypoint {
     function token() external view returns (address);
     function oft() external view returns (address);
     function dstEid() external view returns (uint32);
-    function bridgeComposer() external view returns (bytes32);
+    function lzAdapter() external view returns (bytes32);
 
     // =========================================================================
     // User entry point
@@ -70,13 +69,13 @@ interface IUtexoSourceEntrypoint {
 
     /// @notice Pulls `p.amountLD` of `token` from the caller, forwards it into the
     ///         USDT0 OFT, and requests LayerZero delivery to the Utexo
-    ///         `BridgeComposer` on the destination chain with the provided
+    ///         `UtexoLZAdapter` on the destination chain with the provided
     ///         `composeMsg`.
     /// @dev    `msg.value` must cover the LayerZero native fee returned by
     ///         `IOFT.quoteSend`. Surplus is refunded to the caller.
     function deposit(DepositParams calldata p) external payable returns (bytes32 guid);
 
     /// @notice Convenience re-export of `IOFT.quoteSend` so frontends can quote without
-    ///         knowing the OFT address / hard-coded `dstEid` / `bridgeComposer`.
+    ///         knowing the OFT address / hard-coded `dstEid` / `lzAdapter`.
     function quote(DepositParams calldata p) external view returns (uint256 nativeFee);
 }
