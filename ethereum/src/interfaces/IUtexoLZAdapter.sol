@@ -47,6 +47,7 @@ interface IUtexoLZAdapter {
     error InvalidBridge();
     error InvalidMultisigProxy();
     error InvalidRecipient();
+    error InvalidEntrypoint();
 
     error NotEndpoint();
     error NotMultisigProxy();
@@ -57,6 +58,7 @@ interface IUtexoLZAdapter {
     error NativeRefundFailed();
 
     error NoStuckFunds(bytes32 guid);
+    error UntrustedComposeSource(bytes32 composeFrom);
 
     // =========================================================================
     // Events
@@ -116,6 +118,13 @@ interface IUtexoLZAdapter {
         uint256 nativeValue
     );
 
+    /// @notice Emitted whenever the trusted-entrypoint set is mutated by
+    ///         federation governance.
+    /// @param entrypoint Source-chain entrypoint address as bytes32 (left-padded
+    ///                   for EVM, full 32 bytes for non-EVM chains).
+    /// @param trusted    New flag value.
+    event TrustedEntrypointSet(bytes32 indexed entrypoint, bool trusted);
+
     // =========================================================================
     // State views
     // =========================================================================
@@ -125,6 +134,9 @@ interface IUtexoLZAdapter {
     function token()         external view returns (address);
     function bridge()        external view returns (address);
     function multisigProxy() external view returns (address);
+
+    /// @notice Whether a source-chain entrypoint address is allowed to drive `lzCompose`.
+    function trustedEntrypoints(bytes32 entrypoint) external view returns (bool);
 
     /// @notice Returns the stuck-funds record for a given LayerZero guid.
     ///         `amountLD == 0` signals "no record".
@@ -145,14 +157,16 @@ interface IUtexoLZAdapter {
     /// @param amount       Amount of USDT0 to send.
     /// @param minAmountLD  Slippage guard.
     /// @param extraOptions LayerZero executor options (`lzReceiveOption` only — no compose).
-    /// @return guid LayerZero message guid.
+    /// @dev The LayerZero message guid is published only via the `SendOut`
+    ///      event — the sole authorised caller (`MultisigProxy.executeBatch`)
+    ///      cannot consume a return value anyway.
     function sendOut(
         uint32  dstEid,
         bytes32 recipient,
         uint256 amount,
         uint256 minAmountLD,
         bytes   calldata extraOptions
-    ) external payable returns (bytes32 guid);
+    ) external payable;
 
     /// @notice Convenience re-export of `OFT.quoteSend` for the outbound shape.
     function quoteSendOut(
@@ -174,4 +188,19 @@ interface IUtexoLZAdapter {
     /// @param guid      LayerZero compose guid whose record to refund.
     /// @param recipient Destination for the refund (non-zero).
     function refundStuckFunds(bytes32 guid, address recipient) external;
+
+    // =========================================================================
+    // Trusted entrypoint registry
+    // =========================================================================
+
+    /// @notice Adds or removes a source-chain entrypoint from the trusted set.
+    ///         `lzCompose` requires the inbound packet's `composeFrom` (i.e. the
+    ///         `msg.sender` of the original `OFT.send` call on the source chain,
+    ///         preserved by the OFT protocol) to be in this set — otherwise the
+    ///         call reverts. Callable only by `multisigProxy`, so changes go
+    ///         through federation governance.
+    /// @param entrypoint Source-chain entrypoint address as bytes32 (left-padded
+    ///                   for EVM, full 32 bytes for non-EVM chains). Non-zero.
+    /// @param trusted    `true` to add, `false` to remove.
+    function setTrustedEntrypoint(bytes32 entrypoint, bool trusted) external;
 }
