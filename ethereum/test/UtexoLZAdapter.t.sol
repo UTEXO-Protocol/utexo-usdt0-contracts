@@ -42,6 +42,7 @@ contract UtexoLZAdapterTest is Test {
     // -- Actors ---------------------------------------------------------------
     address endpoint      = makeAddr('endpoint');
     address multisigProxy = makeAddr('multisigProxy');
+    address relayer       = makeAddr('relayer');
     address recipientEoa  = makeAddr('recipient');
     bytes32 recipientB32  = bytes32(uint256(uint160(makeAddr('recipient'))));
 
@@ -252,7 +253,9 @@ contract UtexoLZAdapterTest is Test {
             amount
         );
 
-        vm.prank(multisigProxy);
+        // `vm.prank(msgSender, txOrigin)` sets both — the adapter refunds
+        // the native surplus to `tx.origin` (= the relayer EOA in production).
+        vm.prank(multisigProxy, relayer);
         bytes32 guid = adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, amount, amount, extraOptions
         );
@@ -271,7 +274,9 @@ contract UtexoLZAdapterTest is Test {
         assertEq(oft.lastComposeMsg().length,        0,             'composeMsg empty');
         assertEq(oft.lastOftCmd().length,            0,             'oftCmd empty');
         assertEq(oft.lastMsgValue(),                 NATIVE_FEE,    'native fee forwarded');
-        assertEq(oft.lastRefundAddress(),            multisigProxy, 'refund addr');
+        // OFT.send is called with refundAddress = tx.origin, which equals the
+        // relayer EOA in production. Defensive only — OFT consumes the full fee.
+        assertEq(oft.lastRefundAddress(),            relayer,       'refund addr = tx.origin');
 
         // Exact-fee call: proxy balance drops by exactly NATIVE_FEE.
         assertEq(multisigProxy.balance, proxyBalBefore - NATIVE_FEE, 'no surplus expected');
@@ -281,32 +286,41 @@ contract UtexoLZAdapterTest is Test {
         assertEq(address(adapter).balance, 0, 'no native residue');
     }
 
-    function test_sendOut_surplusNativeRefundedToProxy() public {
+    function test_sendOut_surplusNativeRefundedToTxOrigin() public {
         uint256 amount  = 250e6;
         uint256 surplus = 0.05 ether;
         token.mint(address(adapter), amount);
 
-        uint256 proxyBalBefore = multisigProxy.balance;
+        uint256 proxyBalBefore   = multisigProxy.balance;
+        uint256 relayerBalBefore = relayer.balance;
 
-        vm.prank(multisigProxy);
+        // tx.origin = relayer → surplus is refunded to relayer.
+        vm.prank(multisigProxy, relayer);
         adapter.sendOut{ value: NATIVE_FEE + surplus }(
             DST_EID, recipientB32, amount, amount, hex'0003'
         );
 
-        assertEq(multisigProxy.balance, proxyBalBefore - NATIVE_FEE, 'surplus refunded');
+        // Proxy paid the full msg.value (fee + surplus).
+        assertEq(
+            multisigProxy.balance,
+            proxyBalBefore - NATIVE_FEE - surplus,
+            'proxy paid fee + surplus'
+        );
+        // Relayer received exactly the surplus as refund from the adapter.
+        assertEq(relayer.balance, relayerBalBefore + surplus, 'surplus refunded to tx.origin');
         assertEq(address(adapter).balance, 0, 'no native residue');
     }
 
     function test_sendOut_returnsGuidFromOft() public {
         token.mint(address(adapter), 100e6);
 
-        vm.prank(multisigProxy);
+        vm.prank(multisigProxy, relayer);
         bytes32 g1 = adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, 50e6, 50e6, hex'0003'
         );
 
         token.mint(address(adapter), 100e6);
-        vm.prank(multisigProxy);
+        vm.prank(multisigProxy, relayer);
         bytes32 g2 = adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, 50e6, 50e6, hex'0003'
         );
@@ -334,7 +348,7 @@ contract UtexoLZAdapterTest is Test {
     }
 
     function test_sendOut_revertsOnZeroAmount() public {
-        vm.prank(multisigProxy);
+        vm.prank(multisigProxy, relayer);
         vm.expectRevert(IUtexoLZAdapter.ZeroAmount.selector);
         adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, 0, 0, hex'0003'
@@ -342,7 +356,7 @@ contract UtexoLZAdapterTest is Test {
     }
 
     function test_sendOut_revertsOnZeroRecipient() public {
-        vm.prank(multisigProxy);
+        vm.prank(multisigProxy, relayer);
         vm.expectRevert(IUtexoLZAdapter.InvalidRecipient.selector);
         adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, bytes32(0), 100e6, 100e6, hex'0003'
@@ -352,7 +366,7 @@ contract UtexoLZAdapterTest is Test {
     function test_sendOut_revertsOnInsufficientNativeFee() public {
         token.mint(address(adapter), 100e6);
 
-        vm.prank(multisigProxy);
+        vm.prank(multisigProxy, relayer);
         vm.expectRevert(abi.encodeWithSelector(
             IUtexoLZAdapter.InsufficientNativeFee.selector,
             NATIVE_FEE - 1,
@@ -367,51 +381,41 @@ contract UtexoLZAdapterTest is Test {
         oft.setSendReverts(true);
         token.mint(address(adapter), 100e6);
 
-        vm.prank(multisigProxy);
+        vm.prank(multisigProxy, relayer);
         vm.expectRevert(bytes('MockOFT: forced revert'));
         adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, 100e6, 100e6, hex'0003'
         );
     }
 
+    /// @dev Refund failure path: `tx.origin` is spoofed to a contract that
+    ///      rejects plain-ether transfers (no `receive()`). Cannot happen in
+    ///      production where `tx.origin` is always the backend relayer EOA,
+    ///      but the branch is reachable on-chain so the revert must surface.
     function test_sendOut_revertsIfRefundFails() public {
-        // Re-deploy adapter with a contract that rejects ETH as the multisigProxy.
-        RejectingProxy rp = new RejectingProxy();
-        UtexoLZAdapter ad = new UtexoLZAdapter(
-            endpoint,
-            address(oft),
-            address(token),
-            address(bridge),
-            address(rp)
-        );
+        RejectingRecipient rr = new RejectingRecipient();
 
         uint256 amount = 100e6;
-        token.mint(address(ad), amount);
-        vm.deal(address(rp), 1 ether);
+        token.mint(address(adapter), amount);
 
+        vm.prank(multisigProxy, address(rr));
         vm.expectRevert(IUtexoLZAdapter.NativeRefundFailed.selector);
-        rp.callSendOut{ value: NATIVE_FEE + 1 }(
-            ad, DST_EID, recipientB32, amount, amount, hex'0003'
+        adapter.sendOut{ value: NATIVE_FEE + 1 }(
+            DST_EID, recipientB32, amount, amount, hex'0003'
         );
     }
 
-    function test_sendOut_exactFee_contractProxy_ok() public {
-        // Same rejecting-proxy, but exact-fee call → no refund attempted.
-        RejectingProxy rp = new RejectingProxy();
-        UtexoLZAdapter ad = new UtexoLZAdapter(
-            endpoint,
-            address(oft),
-            address(token),
-            address(bridge),
-            address(rp)
-        );
+    /// @dev Exact-fee call skips the refund branch entirely, so even a
+    ///      `tx.origin` that rejects ETH does not block the call.
+    function test_sendOut_exactFee_skipsRefundBranch() public {
+        RejectingRecipient rr = new RejectingRecipient();
 
         uint256 amount = 100e6;
-        token.mint(address(ad), amount);
-        vm.deal(address(rp), 1 ether);
+        token.mint(address(adapter), amount);
 
-        rp.callSendOut{ value: NATIVE_FEE }(
-            ad, DST_EID, recipientB32, amount, amount, hex'0003'
+        vm.prank(multisigProxy, address(rr));
+        adapter.sendOut{ value: NATIVE_FEE }(
+            DST_EID, recipientB32, amount, amount, hex'0003'
         );
 
         assertEq(token.balanceOf(address(oft)), amount, 'tokens forwarded');
@@ -451,20 +455,8 @@ contract UtexoLZAdapterTest is Test {
     }
 }
 
-/// @dev Multisig-proxy stand-in that calls `sendOut` but rejects plain-ether
-///      transfers. Used to force the `NativeRefundFailed` branch.
-contract RejectingProxy {
-    function callSendOut(
-        UtexoLZAdapter ad,
-        uint32  dstEid,
-        bytes32 recipient,
-        uint256 amount,
-        uint256 minAmountLD,
-        bytes calldata extraOptions
-    ) external payable returns (bytes32) {
-        return ad.sendOut{ value: msg.value }(
-            dstEid, recipient, amount, minAmountLD, extraOptions
-        );
-    }
-    // No `receive()` / `fallback()` → any ETH sent here reverts.
-}
+/// @dev Contract that rejects every plain-ether transfer. Used as a spoofed
+///      `tx.origin` to force the `NativeRefundFailed` branch in `sendOut`.
+///      No `receive()` / `fallback()` is declared, so any value-carrying call
+///      reverts.
+contract RejectingRecipient {}
