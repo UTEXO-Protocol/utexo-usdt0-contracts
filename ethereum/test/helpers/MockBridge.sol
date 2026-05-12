@@ -18,6 +18,7 @@ contract MockBridge is IBridge {
 
     // Last-call recording -----------------------------------------------------
     uint256 public lastAmount;
+    uint256 public lastSourceChainId;
     string  public lastDestinationChain;
     string  public lastDestinationAddress;
     uint256 public lastOperationId;
@@ -34,6 +35,7 @@ contract MockBridge is IBridge {
 
     function fundsIn(
         uint256 amount,
+        uint256 sourceChainId,
         string  calldata destinationChain,
         string  calldata destinationAddress,
         uint256 operationId
@@ -43,6 +45,7 @@ contract MockBridge is IBridge {
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
         lastAmount             = amount;
+        lastSourceChainId      = sourceChainId;
         lastDestinationChain   = destinationChain;
         lastDestinationAddress = destinationAddress;
         lastOperationId        = operationId;

@@ -22,14 +22,17 @@ interface IUtexoLZAdapter {
     ///                           into `lzCompose` — non-zero on NATIVE-currency
     ///                           commission routes, zero on TOKEN routes.
     /// @param operationId        Backend-assigned operation id from `composeMsg`.
-    /// @param srcEid             Source LayerZero endpoint id of the original packet.
+    /// @param sourceChainId      EVM chain id of the source chain, set by
+    ///                           `UtexoSourceEntrypoint` from `block.chainid` at
+    ///                           deposit time. Non-spoofable for entrypoint-routed
+    ///                           deposits.
     /// @param destinationChain   Final destination chain id (e.g. "rgb").
     /// @param destinationAddress Final recipient on the destination chain.
     struct StuckFunds {
         uint256 amountLD;
         uint256 nativeValue;
         uint256 operationId;
-        uint32  srcEid;
+        uint256 sourceChainId;
         string  destinationChain;
         string  destinationAddress;
     }
@@ -61,14 +64,15 @@ interface IUtexoLZAdapter {
 
     /// @notice Emitted on a successful inbound `lzCompose` → `Bridge.fundsIn` call.
     /// @param guid               LayerZero message guid.
-    /// @param srcEid             Source LayerZero endpoint id.
+    /// @param sourceChainId      EVM chain id of the source chain (from `composeMsg`,
+    ///                           set by `UtexoSourceEntrypoint` from `block.chainid`).
     /// @param amountLD           Amount of USDT0 forwarded into the Bridge (gross).
     /// @param destinationChain   Target chain identifier (e.g. "rgb").
     /// @param destinationAddress Target address on the destination chain.
     /// @param operationId        Backend-assigned operation identifier.
     event ComposeFundsIn(
         bytes32 indexed guid,
-        uint32  srcEid,
+        uint256 sourceChainId,
         uint256 amountLD,
         string  destinationChain,
         string  destinationAddress,
@@ -94,7 +98,7 @@ interface IUtexoLZAdapter {
     ///               `bytes` because Bridge can revert with any custom error.
     event ComposeFundsInFailed(
         bytes32 indexed guid,
-        uint32  srcEid,
+        uint256 sourceChainId,
         uint256 amountLD,
         uint256 nativeValue,
         string  destinationChain,
