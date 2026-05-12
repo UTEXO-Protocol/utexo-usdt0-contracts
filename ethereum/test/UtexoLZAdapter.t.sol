@@ -52,11 +52,17 @@ contract UtexoLZAdapterTest is Test {
         uint256 nativeValue
     );
 
+    event TrustedEntrypointSet(bytes32 indexed entrypoint, bool trusted);
+
     // -- Constants ------------------------------------------------------------
     uint32  constant SRC_EID         = 30101; // LZ endpoint id of the inbound packet
     uint32  constant DST_EID         = 30110; // Arbitrum eid (outbound stub)
     uint256 constant SOURCE_CHAIN_ID = 1;     // Default `block.chainid` carried by composeMsg
     uint256 constant NATIVE_FEE      = 0.01 ether;
+
+    /// @dev Recognisable bytes32 used as `composeFrom` for every "honest" lzCompose
+    ///      test — populated into `trustedEntrypoints` during `setUp`.
+    bytes32 constant TRUSTED_ENTRYPOINT_B32 = bytes32(uint256(0xE471) << 240);
 
     // -- Actors ---------------------------------------------------------------
     address endpoint      = makeAddr('endpoint');
@@ -87,6 +93,10 @@ contract UtexoLZAdapterTest is Test {
 
         vm.deal(endpoint,      100 ether);
         vm.deal(multisigProxy, 100 ether);
+
+        // Whitelist the entrypoint used by every "honest" inbound test.
+        vm.prank(multisigProxy);
+        adapter.setTrustedEntrypoint(TRUSTED_ENTRYPOINT_B32, true);
     }
 
     // =========================================================================
@@ -142,6 +152,7 @@ contract UtexoLZAdapterTest is Test {
             uint64(7),
             SRC_EID,
             amount,
+            TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, destChain, destAddr, opId)
         );
 
@@ -183,6 +194,7 @@ contract UtexoLZAdapterTest is Test {
             uint64(1),
             SRC_EID,
             amount,
+            TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('addr'), uint256(1))
         );
 
@@ -206,6 +218,7 @@ contract UtexoLZAdapterTest is Test {
             uint64(99),
             SRC_EID,
             amount,
+            TRUSTED_ENTRYPOINT_B32,
             abi.encode(customChainId, string('a'), string('b'), uint256(0))
         );
 
@@ -224,7 +237,7 @@ contract UtexoLZAdapterTest is Test {
 
     function test_lzCompose_revertsIfNotEndpoint() public {
         bytes memory message = _encodeCompose(
-            uint64(1), SRC_EID, 1e6,
+            uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, string('a'), string('b'), uint256(0))
         );
 
@@ -235,7 +248,7 @@ contract UtexoLZAdapterTest is Test {
 
     function test_lzCompose_revertsIfFromIsNotOft() public {
         bytes memory message = _encodeCompose(
-            uint64(1), SRC_EID, 1e6,
+            uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, string('a'), string('b'), uint256(0))
         );
 
@@ -260,7 +273,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 opId             = 99;
 
         bytes memory message = _encodeCompose(
-            uint64(1), SRC_EID, amount,
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, destChain, destAddr, opId)
         );
 
@@ -304,7 +317,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes32 guid = bytes32('happy-guid');
         bytes memory message = _encodeCompose(
-            uint64(1), SRC_EID, amount,
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('addr'), uint256(7))
         );
 
@@ -338,13 +351,12 @@ contract UtexoLZAdapterTest is Test {
 
         // `vm.prank(msgSender, txOrigin)` sets both — the adapter refunds
         // the native surplus to `tx.origin` (= the relayer EOA in production).
+        // The MockOFT-generated guid is asserted via the `SendOut` event above;
+        // the function intentionally returns nothing.
         vm.prank(multisigProxy, relayer);
-        bytes32 guid = adapter.sendOut{ value: NATIVE_FEE }(
+        adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, amount, amount, extraOptions
         );
-
-        // Returned guid matches MockOFT's deterministic counter-based guid.
-        assertEq(guid, keccak256(abi.encode('mock-guid', uint64(1))), 'guid');
 
         // OFT received the tokens and the routing parameters byte-for-byte.
         assertEq(token.balanceOf(address(oft)),      amount,        'oft holds tokens');
@@ -394,23 +406,29 @@ contract UtexoLZAdapterTest is Test {
         assertEq(address(adapter).balance, 0, 'no native residue');
     }
 
-    function test_sendOut_returnsGuidFromOft() public {
+    /// @dev `sendOut` no longer returns the guid — it is published only via
+    ///      the `SendOut` event. Assert that each successive call emits a
+    ///      distinct, MockOFT-derived guid.
+    function test_sendOut_emitsUniqueGuidPerCall() public {
         token.mint(address(adapter), 100e6);
 
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit SendOut(keccak256(abi.encode('mock-guid', uint64(1))), DST_EID, recipientB32, 50e6);
+
         vm.prank(multisigProxy, relayer);
-        bytes32 g1 = adapter.sendOut{ value: NATIVE_FEE }(
+        adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, 50e6, 50e6, hex'0003'
         );
 
         token.mint(address(adapter), 100e6);
+
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit SendOut(keccak256(abi.encode('mock-guid', uint64(2))), DST_EID, recipientB32, 50e6);
+
         vm.prank(multisigProxy, relayer);
-        bytes32 g2 = adapter.sendOut{ value: NATIVE_FEE }(
+        adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, recipientB32, 50e6, 50e6, hex'0003'
         );
-
-        assertTrue(g1 != g2, 'guids must differ across calls');
-        assertEq(g1, keccak256(abi.encode('mock-guid', uint64(1))), 'g1');
-        assertEq(g2, keccak256(abi.encode('mock-guid', uint64(2))), 'g2');
     }
 
     // =========================================================================
@@ -626,6 +644,96 @@ contract UtexoLZAdapterTest is Test {
     }
 
     // =========================================================================
+    // Trusted entrypoint registry — setTrustedEntrypoint
+    // =========================================================================
+
+    function test_setTrustedEntrypoint_setsAndUnsets() public {
+        bytes32 ep = bytes32(uint256(0xC0FFEE));
+
+        // Initial state: not trusted.
+        assertEq(adapter.trustedEntrypoints(ep), false, 'starts untrusted');
+
+        // Set true.
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit TrustedEntrypointSet(ep, true);
+
+        vm.prank(multisigProxy);
+        adapter.setTrustedEntrypoint(ep, true);
+        assertEq(adapter.trustedEntrypoints(ep), true, 'trusted after set(true)');
+
+        // Set false.
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit TrustedEntrypointSet(ep, false);
+
+        vm.prank(multisigProxy);
+        adapter.setTrustedEntrypoint(ep, false);
+        assertEq(adapter.trustedEntrypoints(ep), false, 'untrusted after set(false)');
+    }
+
+    function test_setTrustedEntrypoint_revertsIfNotMultisigProxy() public {
+        bytes32 ep = bytes32(uint256(0xC0FFEE));
+        address attacker = makeAddr('attacker');
+
+        vm.prank(attacker);
+        vm.expectRevert(IUtexoLZAdapter.NotMultisigProxy.selector);
+        adapter.setTrustedEntrypoint(ep, true);
+    }
+
+    function test_setTrustedEntrypoint_revertsOnZeroEntrypoint() public {
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.InvalidEntrypoint.selector);
+        adapter.setTrustedEntrypoint(bytes32(0), true);
+    }
+
+    // =========================================================================
+    // lzCompose — trusted-entrypoint enforcement
+    // =========================================================================
+
+    /// @dev Any `composeFrom` outside `trustedEntrypoints` must revert before
+    ///      the payload is decoded or any Bridge interaction starts.
+    function test_lzCompose_revertsOnUntrustedComposeSource() public {
+        bytes32 attackerB32 = bytes32(uint256(0xBADBAD));
+        uint256 amount = 1e6;
+        token.mint(address(adapter), amount);
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, attackerB32,
+            abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('a'), uint256(0))
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.UntrustedComposeSource.selector, attackerB32
+        ));
+        adapter.lzCompose(address(oft), bytes32('x'), message, address(0), '');
+
+        // Funds did not move and no stuck record was created — the call
+        // reverts entirely, leaving the LZ composeQueue intact.
+        assertEq(token.balanceOf(address(bridge)),  0,      'bridge untouched');
+        assertEq(token.balanceOf(address(adapter)), amount, 'adapter still holds tokens');
+
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(bytes32('x'));
+        assertEq(rec.amountLD, 0, 'no stuck record for untrusted source');
+    }
+
+    function test_lzCompose_revertsWhenTrustedEntrypointRevoked() public {
+        // Revoke the entrypoint that `setUp` whitelisted.
+        vm.prank(multisigProxy);
+        adapter.setTrustedEntrypoint(TRUSTED_ENTRYPOINT_B32, false);
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, string('a'), string('b'), uint256(0))
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.UntrustedComposeSource.selector, TRUSTED_ENTRYPOINT_B32
+        ));
+        adapter.lzCompose(address(oft), bytes32('y'), message, address(0), '');
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
@@ -643,7 +751,7 @@ contract UtexoLZAdapterTest is Test {
         token.mint(address(adapter), amount);
 
         bytes memory message = _encodeCompose(
-            uint64(0), SRC_EID, amount,
+            uint64(0), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, destChain, destAddr, opId)
         );
 
@@ -660,13 +768,14 @@ contract UtexoLZAdapterTest is Test {
         uint64  nonce_,
         uint32  srcEid_,
         uint256 amountLD_,
+        bytes32 composeFrom_,
         bytes memory businessPayload
     ) internal pure returns (bytes memory) {
         return OFTComposeMsgCodec.encode(
             nonce_,
             srcEid_,
             amountLD_,
-            abi.encodePacked(bytes32(0), businessPayload)
+            abi.encodePacked(composeFrom_, businessPayload)
         );
     }
 }
