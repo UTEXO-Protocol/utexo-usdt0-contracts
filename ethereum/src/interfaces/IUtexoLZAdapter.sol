@@ -11,6 +11,30 @@ pragma solidity 0.8.20;
 ///                       and forwards it via `OFT.send` to the user's destination chain.
 interface IUtexoLZAdapter {
     // =========================================================================
+    // Types
+    // =========================================================================
+
+    /// @notice Snapshot of an inbound compose payload whose `Bridge.fundsIn`
+    ///         call reverted. Held on the adapter until federation governance
+    ///         releases it via `refundStuckFunds`.
+    /// @param amountLD           USDT0 amount that the OFT minted to the adapter.
+    /// @param nativeValue        Native (wei) the LayerZero Executor forwarded
+    ///                           into `lzCompose` — non-zero on NATIVE-currency
+    ///                           commission routes, zero on TOKEN routes.
+    /// @param operationId        Backend-assigned operation id from `composeMsg`.
+    /// @param srcEid             Source LayerZero endpoint id of the original packet.
+    /// @param destinationChain   Final destination chain id (e.g. "rgb").
+    /// @param destinationAddress Final recipient on the destination chain.
+    struct StuckFunds {
+        uint256 amountLD;
+        uint256 nativeValue;
+        uint256 operationId;
+        uint32  srcEid;
+        string  destinationChain;
+        string  destinationAddress;
+    }
+
+    // =========================================================================
     // Errors
     // =========================================================================
 
@@ -28,6 +52,8 @@ interface IUtexoLZAdapter {
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
+
+    error NoStuckFunds(bytes32 guid);
 
     // =========================================================================
     // Events
@@ -61,6 +87,31 @@ interface IUtexoLZAdapter {
         uint256 amountLD
     );
 
+    /// @notice Emitted when `Bridge.fundsIn` reverted inside `lzCompose`. The
+    ///         minted USDT0 (and any forwarded native) is held on the adapter
+    ///         under `stuckFunds[guid]` until resolved.
+    /// @param reason Raw revert returndata from `Bridge.fundsIn` — keep as
+    ///               `bytes` because Bridge can revert with any custom error.
+    event ComposeFundsInFailed(
+        bytes32 indexed guid,
+        uint32  srcEid,
+        uint256 amountLD,
+        uint256 nativeValue,
+        string  destinationChain,
+        string  destinationAddress,
+        uint256 operationId,
+        bytes   reason
+    );
+
+    /// @notice Emitted when `refundStuckFunds` releases a stuck record to a
+    ///         recipient designated by federation governance.
+    event StuckFundsRefunded(
+        bytes32 indexed guid,
+        address indexed recipient,
+        uint256 amountLD,
+        uint256 nativeValue
+    );
+
     // =========================================================================
     // State views
     // =========================================================================
@@ -70,6 +121,10 @@ interface IUtexoLZAdapter {
     function token()         external view returns (address);
     function bridge()        external view returns (address);
     function multisigProxy() external view returns (address);
+
+    /// @notice Returns the stuck-funds record for a given LayerZero guid.
+    ///         `amountLD == 0` signals "no record".
+    function getStuckFunds(bytes32 guid) external view returns (StuckFunds memory);
 
     // =========================================================================
     // Outbound — restricted to MultisigProxy
@@ -103,4 +158,16 @@ interface IUtexoLZAdapter {
         uint256 minAmountLD,
         bytes   calldata extraOptions
     ) external view returns (uint256 nativeFee);
+
+    // =========================================================================
+    // Stuck-funds recovery
+    // =========================================================================
+
+    /// @notice Releases a stuck record to `recipient`, transferring both the
+    ///         held USDT0 and any held native value. Callable only by
+    ///         `multisigProxy` — federation governance gates this on the
+    ///         proxy side (timelock + M-of-N).
+    /// @param guid      LayerZero compose guid whose record to refund.
+    /// @param recipient Destination for the refund (non-zero).
+    function refundStuckFunds(bytes32 guid, address recipient) external;
 }

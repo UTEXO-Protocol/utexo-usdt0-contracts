@@ -31,7 +31,12 @@ import { IBridge }         from './interfaces/IBridge.sol';
 ///      │                  ├─► validate msg.sender == endpoint, _from == oft       │
 ///      │                  ├─► decode amountLD + business payload                  │
 ///      │                  ├─► approve Bridge for amountLD                         │
-///      │                  └─► Bridge.fundsIn{ value: msg.value }(amount, ...)     │
+///      │                  ├─► try Bridge.fundsIn{value: msg.value}                │
+///      │                  │     • on success: emit ComposeFundsIn                 │
+///      │                  │     • on revert : park funds in _stuckFunds[guid],    │
+///      │                  │                   emit ComposeFundsInFailed,          │
+///      │                  │                   return ok (frees the LZ queue)     │
+///      │                  └─► release via refundStuckFunds (federation only)      │
 ///      └──────────────────────────────────────────────────────────────────────────┘
 ///
 ///      ┌──────────────────────────── Outbound (FundsOut) ─────────────────────────┐
@@ -70,6 +75,14 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     address public immutable override multisigProxy;
 
     // =========================================================================
+    // Stuck-funds storage
+    // =========================================================================
+
+    /// @dev Records of inbound compose payloads whose `Bridge.fundsIn` call
+    ///      reverted. Keyed by LayerZero compose guid (unique per packet).
+    mapping(bytes32 guid => StuckFunds) internal _stuckFunds;
+
+    // =========================================================================
     // Constructor
     // =========================================================================
 
@@ -104,8 +117,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
     /// @inheritdoc ILayerZeroComposer
     /// @dev Tokens have already been credited to this contract by `OFT._lzReceive`.
-    ///      This call decodes the compose payload and
-    ///      forwards the tokens into `Bridge.fundsIn`.
+    ///      This call decodes the compose payload and forwards it into
+    ///      `Bridge.fundsIn`. If the forwarded call reverts the payload is
+    ///      captured under `_stuckFunds[_guid]` and an `ComposeFundsInFailed`
+    ///      event is emitted — `lzCompose` itself returns successfully so the
+    ///      LayerZero endpoint clears its compose queue and stops retrying.
+    ///      The parked funds can later be released to a federation-approved
+    ///      recipient via `refundStuckFunds`.
     function lzCompose(
         address _from,
         bytes32 _guid,
@@ -123,6 +141,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
         // 1. Decode the LayerZero compose data.
         uint256 amountLD     = OFTComposeMsgCodec.amountLD(_message);
+        uint32  srcEid_      = OFTComposeMsgCodec.srcEid(_message);
         bytes memory payload = OFTComposeMsgCodec.composeMsg(_message);
 
         // 2. Decode the business payload — produced by the Utexo backend on the
@@ -136,24 +155,41 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         // 3. Approve Bridge to pull the USDT0 we just received via lzReceive.
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
 
-        // 4. Forward the call. `msg.value` here is the value the LayerZero Executor
-        //    forwarded into this lzCompose, sized off-chain by the backend to match
-        //    the route's NATIVE commission (or 0 for TOKEN-currency routes).
-        IBridge(bridge).fundsIn{ value: msg.value }(
+        // 4. Forward the call. `msg.value` here is the value the LayerZero
+        //    Executor forwarded into this lzCompose, sized off-chain by the
+        //    backend to match the route's NATIVE commission (or 0 for
+        //    TOKEN-currency routes). If Bridge rejects the call (paused,
+        //    duplicate operationId, native-value mismatch, …) the funds are
+        //    parked in `_stuckFunds[_guid]` and recoverable off the hot path.
+        try IBridge(bridge).fundsIn{ value: msg.value }(
             amountLD,
             destinationChain,
             destinationAddress,
             operationId
-        );
+        ) {
+            emit ComposeFundsIn(
+                _guid, srcEid_, amountLD,
+                destinationChain, destinationAddress, operationId
+            );
+        } catch (bytes memory reason) {
+            // Bridge did not pull the approved allowance — reset it so the
+            // unconsumed approval cannot accumulate across repeated failures.
+            IERC20(token).forceApprove(bridge, 0);
 
-        emit ComposeFundsIn(
-            _guid,
-            OFTComposeMsgCodec.srcEid(_message),
-            amountLD,
-            destinationChain,
-            destinationAddress,
-            operationId
-        );
+            _stuckFunds[_guid] = StuckFunds({
+                amountLD:           amountLD,
+                nativeValue:        msg.value,
+                operationId:        operationId,
+                srcEid:             srcEid_,
+                destinationChain:   destinationChain,
+                destinationAddress: destinationAddress
+            });
+
+            emit ComposeFundsInFailed(
+                _guid, srcEid_, amountLD, msg.value,
+                destinationChain, destinationAddress, operationId, reason
+            );
+        }
     }
 
     // =========================================================================
@@ -243,5 +279,45 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             oftCmd:       ''
         });
         return IOFT(oft).quoteSend(sp, false).nativeFee;
+    }
+
+    // =========================================================================
+    // Stuck-funds recovery
+    // =========================================================================
+
+    /// @inheritdoc IUtexoLZAdapter
+    function getStuckFunds(bytes32 guid) external view override returns (StuckFunds memory) {
+        return _stuckFunds[guid];
+    }
+
+    /// @inheritdoc IUtexoLZAdapter
+    /// @dev Federation governance entrypoint: `MultisigProxy` is the only
+    ///      caller. The proxy itself gates this on the M-of-N federation
+    ///      timelock (see its `proposeAdminExecute*` flow). Off-chain the
+    ///      backend reimburses the original user from `recipient`.
+    function refundStuckFunds(bytes32 guid, address recipient)
+        external
+        override
+        nonReentrant
+    {
+        if (msg.sender != multisigProxy) revert NotMultisigProxy();
+        if (recipient == address(0))     revert InvalidRecipient();
+
+        StuckFunds memory record = _stuckFunds[guid];
+        if (record.amountLD == 0) revert NoStuckFunds(guid);
+
+        delete _stuckFunds[guid];
+
+        // Token leg. SafeERC20 reverts on failure, the whole call rolls back.
+        IERC20(token).safeTransfer(recipient, record.amountLD);
+
+        // Native leg, if any. A revert here also rolls back the token transfer
+        // and the delete — the record stays recoverable.
+        if (record.nativeValue != 0) {
+            (bool ok, ) = recipient.call{ value: record.nativeValue }('');
+            if (!ok) revert NativeRefundFailed();
+        }
+
+        emit StuckFundsRefunded(guid, recipient, record.amountLD, record.nativeValue);
     }
 }
