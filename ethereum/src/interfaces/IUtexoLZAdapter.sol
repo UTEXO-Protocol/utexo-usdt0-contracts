@@ -79,7 +79,8 @@ interface IUtexoLZAdapter {
     ///         `Bridge.fundsOut(recipient = address(this))` leg) to a user on a
     ///         destination LayerZero chain.
     /// @dev Re-quotes the LayerZero fee on-chain. `msg.value` must cover the quoted
-    ///      `nativeFee`; surplus is refunded to `multisigProxy`.
+    ///      `nativeFee`; any surplus is refunded to `tx.origin` (the relayer EOA
+    ///      that submitted `MultisigProxy.executeBatch`).
     /// @param dstEid       Destination LayerZero endpoint id.
     /// @param recipient    Recipient on destination chain (address left-padded to bytes32).
     /// @param amount       Amount of USDT0 to send.

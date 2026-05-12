@@ -205,14 +205,15 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         (MessagingReceipt memory receipt, ) = IOFT(oft).send{ value: fee.nativeFee }(
             sp,
             fee,
-            multisigProxy /* refundAddress — defensive only; OFT consumes the full fee */
+            tx.origin /* refundAddress — defensive only; OFT consumes the full fee */
         );
         guid = receipt.guid;
 
-        // 5. Refund native surplus back to MultisigProxy's float.
+        // 5. Refund native surplus to `tx.origin` — the relayer EOA that
+        //    submitted `MultisigProxy.executeBatch`.
         uint256 excess = msg.value - fee.nativeFee;
         if (excess != 0) {
-            (bool ok, ) = multisigProxy.call{ value: excess }('');
+            (bool ok, ) = tx.origin.call{ value: excess }('');
             if (!ok) revert NativeRefundFailed();
         }
 
