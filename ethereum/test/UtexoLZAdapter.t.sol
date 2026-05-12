@@ -34,6 +34,24 @@ contract UtexoLZAdapterTest is Test {
         uint256 amountLD
     );
 
+    event ComposeFundsInFailed(
+        bytes32 indexed guid,
+        uint32  srcEid,
+        uint256 amountLD,
+        uint256 nativeValue,
+        string  destinationChain,
+        string  destinationAddress,
+        uint256 operationId,
+        bytes   reason
+    );
+
+    event StuckFundsRefunded(
+        bytes32 indexed guid,
+        address indexed recipient,
+        uint256 amountLD,
+        uint256 nativeValue
+    );
+
     // -- Constants ------------------------------------------------------------
     uint32  constant SRC_EID    = 30101;        // Ethereum mainnet eid (inbound)
     uint32  constant DST_EID    = 30110;        // Arbitrum eid (outbound stub)
@@ -218,19 +236,76 @@ contract UtexoLZAdapterTest is Test {
         adapter.lzCompose(makeAddr('not-oft'), bytes32(0), message, address(0), '');
     }
 
-    function test_lzCompose_revertsIfBridgeReverts() public {
+    /// @dev Bridge.fundsIn revert no longer makes `lzCompose` revert — instead
+    ///      the funds are parked under `_stuckFunds[guid]` and a failure event
+    ///      is emitted. `lzCompose` itself returns successfully so the LZ
+    ///      endpoint clears its compose queue.
+    function test_lzCompose_storesStuckRecordIfBridgeReverts() public {
         bridge.setReverts(true);
-        uint256 amount = 1e6;
+
+        uint256 amount      = 1e6;
+        uint256 nativeValue = 0.005 ether;
         token.mint(address(adapter), amount);
+
+        string  memory destChain = 'rgb';
+        string  memory destAddr  = 'tb1q-stuck';
+        uint256 opId             = 99;
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount,
-            abi.encode(string('a'), string('b'), uint256(0))
+            abi.encode(destChain, destAddr, opId)
+        );
+
+        bytes32 guid = bytes32('stuck-guid');
+
+        // Reason data is the abi-encoded `Error(string)` for the mock's
+        // revert message — assert the indexed guid and the non-indexed
+        // scalar/string fields, ignore `reason` byte-for-byte.
+        vm.expectEmit(true, false, false, false, address(adapter));
+        emit ComposeFundsInFailed(
+            guid, SRC_EID, amount, nativeValue, destChain, destAddr, opId, ''
         );
 
         vm.prank(endpoint);
-        vm.expectRevert(bytes('MockBridge: forced revert'));
-        adapter.lzCompose(address(oft), bytes32(0), message, address(0), '');
+        adapter.lzCompose{ value: nativeValue }(
+            address(oft), guid, message, address(0), ''
+        );
+
+        // Funds did NOT leave the adapter — Bridge rejected the call.
+        assertEq(token.balanceOf(address(bridge)),  0,      'bridge unchanged');
+        assertEq(token.balanceOf(address(adapter)), amount, 'adapter still holds tokens');
+        assertEq(address(adapter).balance,          nativeValue, 'adapter holds native');
+
+        // Allowance from the failed attempt was reset to 0 so it does not
+        // accumulate across compose calls with different guids.
+        assertEq(token.allowance(address(adapter), address(bridge)), 0, 'allowance reset');
+
+        // Stuck record captured every field needed to drive a later refund.
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD,            amount,      'stuck amountLD');
+        assertEq(rec.nativeValue,         nativeValue, 'stuck nativeValue');
+        assertEq(rec.operationId,         opId,        'stuck opId');
+        assertEq(uint256(rec.srcEid),     SRC_EID,     'stuck srcEid');
+        assertEq(rec.destinationChain,    destChain,   'stuck destChain');
+        assertEq(rec.destinationAddress,  destAddr,    'stuck destAddr');
+    }
+
+    function test_lzCompose_happyPath_doesNotCreateStuckRecord() public {
+        uint256 amount = 250e6;
+        token.mint(address(adapter), amount);
+
+        bytes32 guid = bytes32('happy-guid');
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount,
+            abi.encode(string('rgb'), string('addr'), uint256(7))
+        );
+
+        vm.prank(endpoint);
+        adapter.lzCompose(address(oft), guid, message, address(0), '');
+
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD,    0, 'no record on success');
+        assertEq(rec.nativeValue, 0, 'no record on success');
     }
 
     // =========================================================================
@@ -434,8 +509,141 @@ contract UtexoLZAdapterTest is Test {
     }
 
     // =========================================================================
+    // Stuck-funds — getStuckFunds + refundStuckFunds
+    // =========================================================================
+
+    function test_getStuckFunds_returnsZeroForUnknownGuid() public view {
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(bytes32('unknown'));
+        assertEq(rec.amountLD,           0,  'amountLD');
+        assertEq(rec.nativeValue,        0,  'nativeValue');
+        assertEq(rec.operationId,        0,  'operationId');
+        assertEq(uint256(rec.srcEid),    0,  'srcEid');
+        assertEq(rec.destinationChain,   '', 'destinationChain');
+        assertEq(rec.destinationAddress, '', 'destinationAddress');
+    }
+
+    function test_refundStuckFunds_happyPath_tokenAndNative() public {
+        uint256 amount      = 1_500e6;
+        uint256 nativeValue = 0.02 ether;
+        bytes32 guid        = bytes32('to-refund');
+
+        _createStuckRecord(guid, amount, nativeValue, 'rgb', 'tb1q-bad', 13);
+
+        address payable refundTo = payable(makeAddr('refundTo'));
+        uint256 tokenBalBefore   = token.balanceOf(refundTo);
+        uint256 nativeBalBefore  = refundTo.balance;
+
+        vm.expectEmit(true, true, false, true, address(adapter));
+        emit StuckFundsRefunded(guid, refundTo, amount, nativeValue);
+
+        vm.prank(multisigProxy);
+        adapter.refundStuckFunds(guid, refundTo);
+
+        // Funds left the adapter and landed on the recipient.
+        assertEq(token.balanceOf(refundTo),         tokenBalBefore + amount,      'tokens transferred');
+        assertEq(refundTo.balance,                  nativeBalBefore + nativeValue, 'native transferred');
+        assertEq(token.balanceOf(address(adapter)), 0,                            'adapter cleared of tokens');
+        assertEq(address(adapter).balance,          0,                            'adapter cleared of native');
+
+        // Record is gone.
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, 0, 'record deleted');
+    }
+
+    function test_refundStuckFunds_tokenOnlyWhenNativeValueIsZero() public {
+        uint256 amount = 800e6;
+        bytes32 guid   = bytes32('token-only');
+
+        _createStuckRecord(guid, amount, 0, 'rgb', 'addr', 1);
+
+        address refundTo = makeAddr('refundTo');
+
+        vm.prank(multisigProxy);
+        adapter.refundStuckFunds(guid, refundTo);
+
+        assertEq(token.balanceOf(refundTo),         amount, 'tokens transferred');
+        assertEq(refundTo.balance,                  0,      'no native delivered');
+        assertEq(token.balanceOf(address(adapter)), 0,      'adapter cleared');
+    }
+
+    function test_refundStuckFunds_revertsIfNotMultisigProxy() public {
+        bytes32 guid = bytes32('any');
+        _createStuckRecord(guid, 1e6, 0, 'rgb', 'addr', 1);
+
+        address attacker = makeAddr('attacker');
+        vm.prank(attacker);
+        vm.expectRevert(IUtexoLZAdapter.NotMultisigProxy.selector);
+        adapter.refundStuckFunds(guid, attacker);
+    }
+
+    function test_refundStuckFunds_revertsOnZeroRecipient() public {
+        bytes32 guid = bytes32('any');
+        _createStuckRecord(guid, 1e6, 0, 'rgb', 'addr', 1);
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.InvalidRecipient.selector);
+        adapter.refundStuckFunds(guid, address(0));
+    }
+
+    function test_refundStuckFunds_revertsIfNoStuckFunds() public {
+        bytes32 unknown = bytes32('unknown');
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.NoStuckFunds.selector, unknown
+        ));
+        adapter.refundStuckFunds(unknown, makeAddr('any'));
+    }
+
+    /// @dev Refund must atomically roll back if the native leg fails, so the
+    ///      record stays recoverable on the next attempt.
+    function test_refundStuckFunds_revertsAndPreservesRecordIfNativeRefundFails() public {
+        uint256 amount      = 100e6;
+        uint256 nativeValue = 0.01 ether;
+        bytes32 guid        = bytes32('native-fail');
+
+        _createStuckRecord(guid, amount, nativeValue, 'rgb', 'addr', 1);
+
+        RejectingRecipient rr = new RejectingRecipient();
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.NativeRefundFailed.selector);
+        adapter.refundStuckFunds(guid, address(rr));
+
+        // Record + adapter balances preserved by the revert rollback.
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD,    amount,      'record preserved');
+        assertEq(rec.nativeValue, nativeValue, 'record preserved');
+        assertEq(token.balanceOf(address(adapter)), amount,      'tokens preserved');
+        assertEq(address(adapter).balance,          nativeValue, 'native preserved');
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
+
+    /// @dev Drive `lzCompose` against a reverting Bridge so a stuck record
+    ///      is created for `guid`.
+    function _createStuckRecord(
+        bytes32 guid,
+        uint256 amount,
+        uint256 nativeValue,
+        string memory destChain,
+        string memory destAddr,
+        uint256 opId
+    ) internal {
+        bridge.setReverts(true);
+        token.mint(address(adapter), amount);
+
+        bytes memory message = _encodeCompose(
+            uint64(0), SRC_EID, amount,
+            abi.encode(destChain, destAddr, opId)
+        );
+
+        vm.prank(endpoint);
+        adapter.lzCompose{ value: nativeValue }(
+            address(oft), guid, message, address(0), ''
+        );
+    }
 
     /// @dev Build the full LayerZero compose-message payload that the Endpoint
     ///      would deliver to `lzCompose`. Layout:
