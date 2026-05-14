@@ -13,7 +13,7 @@ import { IOFT, SendParam }                  from '@layerzerolabs/lz-evm-oapp-v2/
 import { MessagingFee, MessagingReceipt }   from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
 
 import { IUtexoLZAdapter } from './interfaces/IUtexoLZAdapter.sol';
-import { IBridge }         from './interfaces/IBridge.sol';
+import { IBridge }         from '@utexo-smart-contracts/interfaces/IBridge.sol';
 
 /// @title UtexoLZAdapter
 /// @notice Bidirectional adapter between the Utexo `Bridge` (on Arbitrum) and the
@@ -29,9 +29,15 @@ import { IBridge }         from './interfaces/IBridge.sol';
 ///      │  LayerZero ──► UtexoLZAdapter.lzCompose                                  │
 ///      │                  │                                                       │
 ///      │                  ├─► validate msg.sender == endpoint, _from == oft       │
+///      │                  ├─► validate composeFrom ∈ trustedEntrypoints           │
 ///      │                  ├─► decode amountLD + business payload                  │
 ///      │                  ├─► approve Bridge for amountLD                         │
-///      │                  └─► Bridge.fundsIn{ value: msg.value }(amount, ...)     │
+///      │                  ├─► try Bridge.fundsIn{value: msg.value}                │
+///      │                  │     • on success: emit ComposeFundsIn                 │
+///      │                  │     • on revert : park funds in _stuckFunds[guid],    │
+///      │                  │                   emit ComposeFundsInFailed,          │
+///      │                  │                   return ok (frees the LZ queue)     │
+///      │                  └─► release via refundStuckFunds (federation only)      │
 ///      └──────────────────────────────────────────────────────────────────────────┘
 ///
 ///      ┌──────────────────────────── Outbound (FundsOut) ─────────────────────────┐
@@ -70,6 +76,36 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     address public immutable override multisigProxy;
 
     // =========================================================================
+    // Storage
+    // =========================================================================
+
+    /// @notice Trusted source-chain entrypoint set. `lzCompose` accepts a
+    ///         call only if `OFTComposeMsgCodec.composeFrom(_message)` is
+    ///         flagged here. Maintained by federation governance via
+    ///         `setTrustedEntrypoint` (callable only by `multisigProxy`).
+    ///
+    ///         Keyed by `bytes32` so the same registry works for EVM (address
+    ///         left-padded) and non-EVM source chains (full 32-byte address).
+    mapping(bytes32 entrypoint => bool trusted) public override trustedEntrypoints;
+
+    /// @dev Records of inbound compose payloads whose `Bridge.fundsIn` call
+    ///      reverted. Keyed by LayerZero compose guid (unique per packet).
+    mapping(bytes32 guid => StuckFunds) internal _stuckFunds;
+
+    // =========================================================================
+    // Modifiers
+    // =========================================================================
+
+    /// @dev Restricts a function to `multisigProxy`. The proxy itself gates
+    ///      each call behind federation governance (M-of-N + timelock), so a
+    ///      function carrying this modifier is effectively a federation-only
+    ///      administrative entrypoint.
+    modifier onlyMultisigProxy() {
+        if (msg.sender != multisigProxy) revert NotMultisigProxy();
+        _;
+    }
+
+    // =========================================================================
     // Constructor
     // =========================================================================
 
@@ -104,8 +140,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
     /// @inheritdoc ILayerZeroComposer
     /// @dev Tokens have already been credited to this contract by `OFT._lzReceive`.
-    ///      This call decodes the compose payload and
-    ///      forwards the tokens into `Bridge.fundsIn`.
+    ///      This call decodes the compose payload and forwards it into
+    ///      `Bridge.fundsIn`. If the forwarded call reverts the payload is
+    ///      captured under `_stuckFunds[_guid]` and an `ComposeFundsInFailed`
+    ///      event is emitted — `lzCompose` itself returns successfully so the
+    ///      LayerZero endpoint clears its compose queue and stops retrying.
+    ///      The parked funds can later be released to a federation-approved
+    ///      recipient via `refundStuckFunds`.
     function lzCompose(
         address _from,
         bytes32 _guid,
@@ -121,39 +162,69 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         if (msg.sender != endpoint) revert NotEndpoint();
         if (_from      != oft)      revert NotFromOft();
 
-        // 1. Decode the LayerZero compose data.
+        // 1. Reject any call whose source-chain `OFT.send` caller is not a
+        //    trusted entrypoint.
+        bytes32 composeFrom_ = OFTComposeMsgCodec.composeFrom(_message);
+        if (!trustedEntrypoints[composeFrom_]) {
+            revert UntrustedComposeSource(composeFrom_);
+        }
+
+        // 2. Decode the LayerZero compose data.
         uint256 amountLD     = OFTComposeMsgCodec.amountLD(_message);
         bytes memory payload = OFTComposeMsgCodec.composeMsg(_message);
 
-        // 2. Decode the business payload — produced by the Utexo backend on the
-        //    source chain and copied through LayerZero unchanged.
+        // 3. Decode the business payload. `sourceChainId` is the EVM chain id
+        //    captured by `UtexoSourceEntrypoint` from `block.chainid` at deposit
+        //    time — non-spoofable.
         (
-            string memory destinationChain,
+            uint256 sourceChainId,
+            uint256 destinationChainId,
             string memory destinationAddress,
             uint256 operationId
-        ) = abi.decode(payload, (string, string, uint256));
+        ) = abi.decode(payload, (uint256, uint256, string, uint256));
 
-        // 3. Approve Bridge to pull the USDT0 we just received via lzReceive.
+        // 4. Approve Bridge to pull the USDT0 we just received via lzReceive.
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
 
-        // 4. Forward the call. `msg.value` here is the value the LayerZero Executor
-        //    forwarded into this lzCompose, sized off-chain by the backend to match
-        //    the route's NATIVE commission (or 0 for TOKEN-currency routes).
-        IBridge(bridge).fundsIn{ value: msg.value }(
+        // 5. Forward the call. `msg.value` here is the value the LayerZero
+        //    Executor forwarded into this lzCompose, sized off-chain by the
+        //    backend to match the route's NATIVE commission (or 0 for
+        //    TOKEN-currency routes). Calls the adapter-only `fundsIn` overload
+        //    (5-arg, `onlyLZAdapter`-gated) so the non-spoofable
+        //    `sourceChainId` reaches commission routing. If Bridge rejects the
+        //    call (paused, duplicate operationId, native-value mismatch, …) the
+        //    funds are parked in `_stuckFunds[_guid]` and recoverable off the
+        //    hot path.
+        try IBridge(bridge).fundsIn{ value: msg.value }(
             amountLD,
-            destinationChain,
+            sourceChainId,
+            destinationChainId,
             destinationAddress,
             operationId
-        );
+        ) {
+            emit ComposeFundsIn(
+                _guid, sourceChainId, amountLD,
+                destinationChainId, destinationAddress, operationId
+            );
+        } catch (bytes memory reason) {
+            // Bridge did not pull the approved allowance — reset it so the
+            // unconsumed approval cannot accumulate across repeated failures.
+            IERC20(token).forceApprove(bridge, 0);
 
-        emit ComposeFundsIn(
-            _guid,
-            OFTComposeMsgCodec.srcEid(_message),
-            amountLD,
-            destinationChain,
-            destinationAddress,
-            operationId
-        );
+            _stuckFunds[_guid] = StuckFunds({
+                amountLD:           amountLD,
+                nativeValue:        msg.value,
+                operationId:        operationId,
+                sourceChainId:      sourceChainId,
+                destinationChainId: destinationChainId,
+                destinationAddress: destinationAddress
+            });
+
+            emit ComposeFundsInFailed(
+                _guid, sourceChainId, amountLD, msg.value,
+                destinationChainId, destinationAddress, operationId, reason
+            );
+        }
     }
 
     // =========================================================================
@@ -171,12 +242,11 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         external
         payable
         override
+        onlyMultisigProxy
         nonReentrant
-        returns (bytes32 guid)
     {
-        if (msg.sender != multisigProxy) revert NotMultisigProxy();
-        if (amount     == 0)             revert ZeroAmount();
-        if (recipient  == bytes32(0))    revert InvalidRecipient();
+        if (amount    == 0)          revert ZeroAmount();
+        if (recipient == bytes32(0)) revert InvalidRecipient();
 
         // 1. Build the LayerZero send parameters. `composeMsg` is empty — we are
         //    delivering plain USDT0 to the user, not invoking any compose hook on
@@ -207,7 +277,6 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             fee,
             tx.origin /* refundAddress — defensive only; OFT consumes the full fee */
         );
-        guid = receipt.guid;
 
         // 5. Refund native surplus to `tx.origin` — the relayer EOA that
         //    submitted `MultisigProxy.executeBatch`.
@@ -217,7 +286,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             if (!ok) revert NativeRefundFailed();
         }
 
-        emit SendOut(guid, dstEid, recipient, amount);
+        emit SendOut(receipt.guid, dstEid, recipient, amount);
     }
 
     /// @inheritdoc IUtexoLZAdapter
@@ -243,5 +312,66 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             oftCmd:       ''
         });
         return IOFT(oft).quoteSend(sp, false).nativeFee;
+    }
+
+    // =========================================================================
+    // Stuck-funds recovery
+    // =========================================================================
+
+    /// @inheritdoc IUtexoLZAdapter
+    function getStuckFunds(bytes32 guid) external view override returns (StuckFunds memory) {
+        return _stuckFunds[guid];
+    }
+
+    /// @inheritdoc IUtexoLZAdapter
+    /// @dev Federation governance entrypoint: `MultisigProxy` is the only
+    ///      caller. The proxy itself gates this on the M-of-N federation
+    ///      timelock (see its `proposeAdminExecute*` flow). Off-chain the
+    ///      backend reimburses the original user from `recipient`.
+    function refundStuckFunds(bytes32 guid, address recipient)
+        external
+        override
+        onlyMultisigProxy
+        nonReentrant
+    {
+        if (recipient == address(0)) revert InvalidRecipient();
+
+        StuckFunds memory record = _stuckFunds[guid];
+        if (record.amountLD == 0) revert NoStuckFunds(guid);
+
+        delete _stuckFunds[guid];
+
+        // Token leg. SafeERC20 reverts on failure, the whole call rolls back.
+        IERC20(token).safeTransfer(recipient, record.amountLD);
+
+        // Native leg, if any. A revert here also rolls back the token transfer
+        // and the delete — the record stays recoverable.
+        if (record.nativeValue != 0) {
+            (bool ok, ) = recipient.call{ value: record.nativeValue }('');
+            if (!ok) revert NativeRefundFailed();
+        }
+
+        emit StuckFundsRefunded(guid, recipient, record.amountLD, record.nativeValue);
+    }
+
+    // =========================================================================
+    // Trusted entrypoint registry
+    // =========================================================================
+
+    /// @inheritdoc IUtexoLZAdapter
+    /// @dev Federation governance entrypoint: `MultisigProxy` is the only
+    ///      caller. The proxy gates this on its M-of-N timelock flow, so
+    ///      mutating the trusted set is a deliberate federation decision —
+    ///      e.g. adding a freshly deployed source-chain entrypoint, rotating
+    ///      an entrypoint after redeploy, or revoking a compromised one.
+    function setTrustedEntrypoint(bytes32 entrypoint, bool trusted)
+        external
+        override
+        onlyMultisigProxy
+    {
+        if (entrypoint == bytes32(0)) revert InvalidEntrypoint();
+
+        trustedEntrypoints[entrypoint] = trusted;
+        emit TrustedEntrypointSet(entrypoint, trusted);
     }
 }

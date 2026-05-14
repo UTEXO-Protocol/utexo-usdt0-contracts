@@ -6,8 +6,8 @@ import { Test } from 'forge-std/Test.sol';
 import { UtexoSourceEntrypoint } from '../src/UtexoSourceEntrypoint.sol';
 import { IUtexoSourceEntrypoint } from '../src/interfaces/IUtexoSourceEntrypoint.sol';
 
-import { MockERC20 } from './helpers/MockERC20.sol';
-import { MockOFT }   from './helpers/MockOFT.sol';
+import { MockERC20 } from './mocks/MockERC20.sol';
+import { MockOFT }   from './mocks/MockOFT.sol';
 
 /// @title UtexoSourceEntrypointTest
 /// @notice Verifies that `UtexoSourceEntrypoint` forwards deposits into the OFT
@@ -18,8 +18,18 @@ contract UtexoSourceEntrypointTest is Test {
         bytes32 indexed guid,
         address indexed user,
         uint256 amountLD,
-        bytes   composeMsg
+        uint256 sourceChainId,
+        uint256 destinationChainId,
+        string  destinationAddress,
+        uint256 operationId
     );
+
+    // -- Business payload constants (entrypoint decodes these from `payload`) --
+    /// @dev Reserved-range id for the RGB endpoint (non-EVM). Anything above
+    ///      the real EVM range is fine — backend owns this namespace.
+    uint256 constant DEST_CHAIN_ID = 1_000_001;
+    string  constant DEST_ADDR     = 'tb1q-dest-addr';
+    uint256 constant OPERATION_ID  = 42;
 
     // -- Constants ------------------------------------------------------------
     uint32  constant DST_EID = 30110; // Arbitrum LayerZero eid
@@ -98,7 +108,10 @@ contract UtexoSourceEntrypointTest is Test {
             keccak256(abi.encode('mock-guid', uint64(1))),
             user,
             p.amountLD,
-            p.composeMsg
+            block.chainid,
+            DEST_CHAIN_ID,
+            DEST_ADDR,
+            OPERATION_ID
         );
 
         bytes32 guid = entrypoint.deposit{ value: NATIVE_FEE }(p);
@@ -115,6 +128,12 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastMinAmountLD(),     p.minAmountLD, 'minAmount forwarded');
         assertEq(oft.lastMsgValue(),        NATIVE_FEE,    'msg.value forwarded');
         assertEq(oft.lastRefundAddress(),   user,          'refund addr');
+
+        // Entrypoint rewrote `composeMsg` with `block.chainid` prepended.
+        bytes memory expectedComposeMsg = abi.encode(
+            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID
+        );
+        assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg = chainid + business');
 
         // Exact-fee call: user's native balance drops by exactly NATIVE_FEE.
         assertEq(user.balance, userBalBefore - NATIVE_FEE, 'no surplus refund expected');
@@ -139,13 +158,17 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(address(entrypoint).balance, 0,           'no native residue');
     }
 
-    function test_deposit_forwardsOpaqueComposeMsgUnchanged() public {
-        bytes memory opaque = hex'deadbeefcafebabe1337';
+    /// @dev `extraOptions` is the only `bytes` field passed through unchanged.
+    ///      `payload` is decoded and recombined with `block.chainid`, so it is
+    ///      NOT byte-equal to `oft.lastComposeMsg()` — that case is exercised
+    ///      by `test_deposit_happyPath_forwardsAndEmits`.
+    function test_deposit_forwardsExtraOptionsUnchanged() public {
+        bytes memory extra = hex'0003010011010000000000000000000000000000ea60';
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
             amountLD:     42e6,
             minAmountLD:  42e6,
-            extraOptions: hex'0003010011010000000000000000000000000000ea60',
-            composeMsg:   opaque
+            extraOptions: extra,
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID)
         });
 
         vm.startPrank(user);
@@ -153,9 +176,33 @@ contract UtexoSourceEntrypointTest is Test {
         entrypoint.deposit{ value: NATIVE_FEE }(p);
         vm.stopPrank();
 
-        assertEq(oft.lastComposeMsg(),   opaque,           'composeMsg forwarded byte-for-byte');
-        assertEq(oft.lastExtraOptions(), p.extraOptions,   'extraOptions forwarded');
-        assertEq(oft.lastOftCmd().length, 0,                'oftCmd is always empty');
+        assertEq(oft.lastExtraOptions(),  extra, 'extraOptions forwarded byte-for-byte');
+        assertEq(oft.lastOftCmd().length, 0,     'oftCmd is always empty');
+    }
+
+    /// @dev A malformed `payload` (cannot decode as (uint256, string, uint256))
+    ///      must revert on the source chain, before the OFT pulls tokens or the
+    ///      caller pays an LZ fee — preventing un-decodable composeMsgs from
+    ///      ever being delivered to `UtexoLZAdapter.lzCompose`.
+    function test_deposit_revertsOnMalformedPayload() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      hex'01020304' // 4 bytes — too short to decode three dynamic fields
+        });
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+
+        // Solidity's abi.decode reverts with no data on insufficient input.
+        vm.expectRevert();
+        entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        // No token transfer happened, no LZ fee paid.
+        assertEq(token.balanceOf(address(oft)),        0, 'oft untouched');
+        assertEq(token.balanceOf(address(entrypoint)), 0, 'entrypoint did not pull');
     }
 
     // =========================================================================
@@ -251,7 +298,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     amount,
             minAmountLD:  amount,
             extraOptions: hex'0003',                 // arbitrary non-empty
-            composeMsg:   hex'01020304'              // arbitrary non-empty
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID)
         });
     }
 }
