@@ -16,13 +16,17 @@ interface IUtexoSourceEntrypoint {
     /// @param extraOptions LayerZero executor options encoding `lzReceive` / `lzCompose`
     ///                     gas budgets and the destination-side `msg.value` forwarded
     ///                     into `UtexoLZAdapter.lzCompose`. Produced by the backend.
-    /// @param composeMsg   Opaque payload consumed by `UtexoLZAdapter` on destination.
-    ///                     Produced by the backend; this contract never inspects it.
+    /// @param payload      Caller-supplied business payload encoded as
+    ///                     `abi.encode(uint256 destinationChainId, string destinationAddress, uint256 operationId)`.
+    ///                     The entrypoint decodes it on the source chain to validate
+    ///                     the format (malformed input reverts here, before any LZ fee
+    ///                     is paid) and re-encodes it with `block.chainid` prepended
+    ///                     as the actual `composeMsg` forwarded to LayerZero.
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
         bytes   extraOptions;
-        bytes   composeMsg;
+        bytes   payload;
     }
 
     // =========================================================================
@@ -42,16 +46,27 @@ interface IUtexoSourceEntrypoint {
     // =========================================================================
 
     /// @notice Emitted for every successful deposit forwarded to the USDT0 OFT.
-    /// @param guid       LayerZero message guid; correlates with the compose event on
-    ///                   the destination chain.
-    /// @param user       Address whose tokens were pulled and charged for the LZ fee.
-    /// @param amountLD   Amount of `token` forwarded into the OFT (gross, pre-OFT-fee).
-    /// @param composeMsg Opaque payload forwarded to `UtexoLZAdapter`.
+    /// @param guid                LayerZero message guid; correlates with the compose
+    ///                            event on the destination chain.
+    /// @param user                Address whose tokens were pulled and charged for the
+    ///                            LZ fee.
+    /// @param amountLD            Amount of `token` forwarded into the OFT (gross,
+    ///                            pre-OFT-fee).
+    /// @param sourceChainId       `block.chainid` captured at deposit time; embedded
+    ///                            in the `composeMsg` and consumed by `Bridge.fundsIn`
+    ///                            on Arbitrum for commission routing.
+    /// @param destinationChainId  Final destination chain id (`uint256`; passes through
+    ///                            to Bridge unchanged).
+    /// @param destinationAddress  Final recipient address on `destinationChainId`.
+    /// @param operationId         Backend-assigned operation id (replay guard on Bridge).
     event Deposit(
         bytes32 indexed guid,
         address indexed user,
         uint256 amountLD,
-        bytes   composeMsg
+        uint256 sourceChainId,
+        uint256 destinationChainId,
+        string  destinationAddress,
+        uint256 operationId
     );
 
     // =========================================================================
@@ -69,13 +84,16 @@ interface IUtexoSourceEntrypoint {
 
     /// @notice Pulls `p.amountLD` of `token` from the caller, forwards it into the
     ///         USDT0 OFT, and requests LayerZero delivery to the Utexo
-    ///         `UtexoLZAdapter` on the destination chain with the provided
-    ///         `composeMsg`.
+    ///         `UtexoLZAdapter` on the destination chain. The entrypoint
+    ///         constructs the `composeMsg` itself with `block.chainid` as the first
+    ///         field so the caller cannot spoof the source-chain identifier that
+    ///         `Bridge` will use for commission routing.
     /// @dev    `msg.value` must cover the LayerZero native fee returned by
     ///         `IOFT.quoteSend`. Surplus is refunded to the caller.
     function deposit(DepositParams calldata p) external payable returns (bytes32 guid);
 
     /// @notice Convenience re-export of `IOFT.quoteSend` so frontends can quote without
-    ///         knowing the OFT address / hard-coded `dstEid` / `lzAdapter`.
+    ///         knowing the OFT address / hard-coded `dstEid` / `lzAdapter`. Builds
+    ///         the same `composeMsg` as `deposit`.
     function quote(DepositParams calldata p) external view returns (uint256 nativeFee);
 }

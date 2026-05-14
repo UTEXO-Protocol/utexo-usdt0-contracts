@@ -37,10 +37,10 @@ lib/
 
 ### Flow
 
-1. The user calls `UtexoSourceEntrypoint.deposit()` on the source chain, paying the LayerZero native fee.
-2. The entrypoint pulls the user's tokens and forwards them into the USDT0 OFT via `OFT.send()`, attaching a `composeMsg` produced by the Utexo backend.
+1. The user calls `UtexoSourceEntrypoint.deposit()` on the source chain, paying the LayerZero native fee. The caller supplies a `bytes payload` shaped as `abi.encode(string destinationChain, string destinationAddress, uint256 operationId)`.
+2. The entrypoint decodes `payload` on the source chain (a malformed blob reverts here, before any LZ fee is paid), then re-encodes the actual `composeMsg` as `abi.encode(block.chainid, destinationChain, destinationAddress, operationId)` and forwards the tokens into the USDT0 OFT via `OFT.send()`. The `sourceChainId` half is captured from `block.chainid` and is therefore non-spoofable by the caller.
 3. LayerZero delivers the tokens to Arbitrum and triggers `UtexoLZAdapter.lzCompose()`.
-4. `UtexoLZAdapter` calls `Bridge.fundsIn()` on Arbitrum, locking the funds. The Utexo backend then initiates the RGB-side release.
+4. `UtexoLZAdapter` calls the adapter-only overload of `Bridge.fundsIn()` on Arbitrum, threading `sourceChainId` through for commission routing and locking the funds. If `Bridge.fundsIn` reverts (paused, duplicate `operationId`, native-value mismatch, …) the inbound payload is parked on the adapter and recoverable via federation governance — see [Stuck funds](#stuck-funds).
 
 ## Contracts
 
@@ -59,6 +59,36 @@ Key properties:
 - Re-quotes the LayerZero fee on-chain — protects against stale off-chain quotes.
 - Surplus `msg.value` is refunded to the caller.
 - No owner, no pause, no admin functions. Upgrade = redeploy.
+
+### `UtexoLZAdapter` (`ethereum/src/UtexoLZAdapter.sol`)
+
+Deployed once on Arbitrum. Non-upgradeable — all five participating addresses (`endpoint`, `oft`, `token`, `bridge`, `multisigProxy`) are immutable. To repoint any of them the adapter must be redeployed and the reference rotated through `MultisigProxy` federation governance.
+
+Two flows:
+
+- **Inbound (`lzCompose`)** — invoked by the LayerZero endpoint when a USDT0 OFT message addressed to the adapter arrives on Arbitrum. The adapter approves the `Bridge` and forwards the deposit into `Bridge.fundsIn`. The call is wrapped in `try/catch`: on revert the funds are stored on the adapter and a `ComposeFundsInFailed` event is emitted (see [Stuck funds](#stuck-funds)). The adapter's outer call always returns successfully so the LayerZero endpoint clears its compose queue.
+- **Outbound (`sendOut`)** — restricted to `MultisigProxy`. Called from a TEE-signed `executeBatch` immediately after `Bridge.fundsOut(recipient = adapter)`. Re-quotes the LayerZero fee on-chain; any surplus `msg.value` is refunded to `tx.origin` (the backend relayer EOA that submitted the batch — `MultisigProxy` has no `receive()` and would reject a refund).
+
+#### Stuck funds
+
+When `Bridge.fundsIn` reverts inside `lzCompose`, the parked payload is recorded under `_stuckFunds[guid]`:
+
+| Field | Description |
+|---|---|
+| `amountLD` | USDT0 minted onto the adapter by the OFT |
+| `nativeValue` | Native (wei) the LayerZero Executor forwarded into `lzCompose` (non-zero for NATIVE-currency commission routes, 0 for TOKEN routes) |
+| `sourceChainId` | EVM `block.chainid` of the source chain, captured by `UtexoSourceEntrypoint` at deposit time |
+| `operationId`, `destinationChain`, `destinationAddress` | Business fields copied from the decoded `composeMsg` for off-chain diagnostics |
+
+Read a record via `getStuckFunds(guid) returns (StuckFunds memory)`. `amountLD == 0` means "no record".
+
+Release path — `refundStuckFunds(bytes32 guid, address recipient)`:
+
+- Callable only by `multisigProxy` (federation governance gates this on its M-of-N timelock flow).
+- Transfers `amountLD` USDT0 and any `nativeValue` to `recipient`, deletes the stored record, emits `StuckFundsRefunded`.
+- Atomic: a failing native transfer reverts the entire call, so the record stays recoverable.
+
+There is no on-chain retry — by the time `Bridge.fundsIn` reverts the inbound parameters are user-supplied and re-issuing the same call would deterministically fail again. The federation refunds out to a custodian address; the Utexo backend reimburses the original user off-chain from that custodian.
 
 ## Prerequisites
 
