@@ -19,15 +19,17 @@ contract UtexoSourceEntrypointTest is Test {
         address indexed user,
         uint256 amountLD,
         uint256 sourceChainId,
-        string  destinationChain,
+        uint256 destinationChainId,
         string  destinationAddress,
         uint256 operationId
     );
 
     // -- Business payload constants (entrypoint decodes these from `payload`) --
-    string  constant DEST_CHAIN   = 'rgb';
-    string  constant DEST_ADDR    = 'tb1q-dest-addr';
-    uint256 constant OPERATION_ID = 42;
+    /// @dev Reserved-range id for the RGB endpoint (non-EVM). Anything above
+    ///      the real EVM range is fine — backend owns this namespace.
+    uint256 constant DEST_CHAIN_ID = 1_000_001;
+    string  constant DEST_ADDR     = 'tb1q-dest-addr';
+    uint256 constant OPERATION_ID  = 42;
 
     // -- Constants ------------------------------------------------------------
     uint32  constant DST_EID = 30110; // Arbitrum LayerZero eid
@@ -107,7 +109,7 @@ contract UtexoSourceEntrypointTest is Test {
             user,
             p.amountLD,
             block.chainid,
-            DEST_CHAIN,
+            DEST_CHAIN_ID,
             DEST_ADDR,
             OPERATION_ID
         );
@@ -129,7 +131,7 @@ contract UtexoSourceEntrypointTest is Test {
 
         // Entrypoint rewrote `composeMsg` with `block.chainid` prepended.
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, DEST_CHAIN, DEST_ADDR, OPERATION_ID
+            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg = chainid + business');
 
@@ -166,7 +168,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     42e6,
             minAmountLD:  42e6,
             extraOptions: extra,
-            payload:      abi.encode(DEST_CHAIN, DEST_ADDR, OPERATION_ID)
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID)
         });
 
         vm.startPrank(user);
@@ -178,7 +180,7 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastOftCmd().length, 0,     'oftCmd is always empty');
     }
 
-    /// @dev A malformed `payload` (cannot decode as (string, string, uint256))
+    /// @dev A malformed `payload` (cannot decode as (uint256, string, uint256))
     ///      must revert on the source chain, before the OFT pulls tokens or the
     ///      caller pays an LZ fee — preventing un-decodable composeMsgs from
     ///      ever being delivered to `UtexoLZAdapter.lzCompose`.
@@ -296,7 +298,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     amount,
             minAmountLD:  amount,
             extraOptions: hex'0003',                 // arbitrary non-empty
-            payload:      abi.encode(DEST_CHAIN, DEST_ADDR, OPERATION_ID)
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID)
         });
     }
 }

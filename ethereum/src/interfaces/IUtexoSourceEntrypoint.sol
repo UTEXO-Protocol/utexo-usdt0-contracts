@@ -17,12 +17,11 @@ interface IUtexoSourceEntrypoint {
     ///                     gas budgets and the destination-side `msg.value` forwarded
     ///                     into `UtexoLZAdapter.lzCompose`. Produced by the backend.
     /// @param payload      Caller-supplied business payload encoded as
-    ///                     `abi.encode(string destinationChain, string destinationAddress, uint256 operationId)`.
+    ///                     `abi.encode(uint256 destinationChainId, string destinationAddress, uint256 operationId)`.
     ///                     The entrypoint decodes it on the source chain to validate
     ///                     the format (malformed input reverts here, before any LZ fee
     ///                     is paid) and re-encodes it with `block.chainid` prepended
-    ///                     as the actual `composeMsg` forwarded to LayerZero. The
-    ///                     `sourceChainId` part is therefore non-spoofable.
+    ///                     as the actual `composeMsg` forwarded to LayerZero.
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
@@ -47,24 +46,25 @@ interface IUtexoSourceEntrypoint {
     // =========================================================================
 
     /// @notice Emitted for every successful deposit forwarded to the USDT0 OFT.
-    /// @param guid               LayerZero message guid; correlates with the compose
-    ///                           event on the destination chain.
-    /// @param user               Address whose tokens were pulled and charged for the
-    ///                           LZ fee.
-    /// @param amountLD           Amount of `token` forwarded into the OFT (gross,
-    ///                           pre-OFT-fee).
-    /// @param sourceChainId      `block.chainid` captured at deposit time; embedded
-    ///                           in the `composeMsg` and consumed by `Bridge.fundsIn`
-    ///                           on Arbitrum for commission routing.
-    /// @param destinationChain   Final destination chain id (passes through to Bridge).
-    /// @param destinationAddress Final recipient address on `destinationChain`.
-    /// @param operationId        Backend-assigned operation id (replay guard on Bridge).
+    /// @param guid                LayerZero message guid; correlates with the compose
+    ///                            event on the destination chain.
+    /// @param user                Address whose tokens were pulled and charged for the
+    ///                            LZ fee.
+    /// @param amountLD            Amount of `token` forwarded into the OFT (gross,
+    ///                            pre-OFT-fee).
+    /// @param sourceChainId       `block.chainid` captured at deposit time; embedded
+    ///                            in the `composeMsg` and consumed by `Bridge.fundsIn`
+    ///                            on Arbitrum for commission routing.
+    /// @param destinationChainId  Final destination chain id (`uint256`; passes through
+    ///                            to Bridge unchanged).
+    /// @param destinationAddress  Final recipient address on `destinationChainId`.
+    /// @param operationId         Backend-assigned operation id (replay guard on Bridge).
     event Deposit(
         bytes32 indexed guid,
         address indexed user,
         uint256 amountLD,
         uint256 sourceChainId,
-        string  destinationChain,
+        uint256 destinationChainId,
         string  destinationAddress,
         uint256 operationId
     );
