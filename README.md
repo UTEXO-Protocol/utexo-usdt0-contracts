@@ -37,10 +37,10 @@ lib/
 
 ### Flow
 
-1. The user calls `UtexoSourceEntrypoint.deposit()` on the source chain, paying the LayerZero native fee.
-2. The entrypoint pulls the user's tokens and forwards them into the USDT0 OFT via `OFT.send()`, attaching a `composeMsg` produced by the Utexo backend.
+1. The user calls `UtexoSourceEntrypoint.deposit()` on the source chain, paying the LayerZero native fee. The caller supplies a `bytes payload` shaped as `abi.encode(string destinationChain, string destinationAddress, uint256 operationId)`.
+2. The entrypoint decodes `payload` on the source chain (a malformed blob reverts here, before any LZ fee is paid), then re-encodes the actual `composeMsg` as `abi.encode(block.chainid, destinationChain, destinationAddress, operationId)` and forwards the tokens into the USDT0 OFT via `OFT.send()`. The `sourceChainId` half is captured from `block.chainid` and is therefore non-spoofable by the caller.
 3. LayerZero delivers the tokens to Arbitrum and triggers `UtexoLZAdapter.lzCompose()`.
-4. `UtexoLZAdapter` calls `Bridge.fundsIn()` on Arbitrum, locking the funds. If `Bridge.fundsIn` reverts (paused, duplicate `operationId`, native-value mismatch, …) the inbound payload is parked on the adapter and recoverable via federation governance — see [Stuck funds](#stuck-funds).
+4. `UtexoLZAdapter` calls the adapter-only overload of `Bridge.fundsIn()` on Arbitrum, threading `sourceChainId` through for commission routing and locking the funds. If `Bridge.fundsIn` reverts (paused, duplicate `operationId`, native-value mismatch, …) the inbound payload is parked on the adapter and recoverable via federation governance — see [Stuck funds](#stuck-funds).
 
 ## Contracts
 
@@ -77,7 +77,8 @@ When `Bridge.fundsIn` reverts inside `lzCompose`, the parked payload is recorded
 |---|---|
 | `amountLD` | USDT0 minted onto the adapter by the OFT |
 | `nativeValue` | Native (wei) the LayerZero Executor forwarded into `lzCompose` (non-zero for NATIVE-currency commission routes, 0 for TOKEN routes) |
-| `operationId`, `srcEid`, `destinationChain`, `destinationAddress` | Metadata copied from the original `composeMsg` for off-chain diagnostics |
+| `sourceChainId` | EVM `block.chainid` of the source chain, captured by `UtexoSourceEntrypoint` at deposit time |
+| `operationId`, `destinationChain`, `destinationAddress` | Business fields copied from the decoded `composeMsg` for off-chain diagnostics |
 
 Read a record via `getStuckFunds(guid) returns (StuckFunds memory)`. `amountLD == 0` means "no record".
 
