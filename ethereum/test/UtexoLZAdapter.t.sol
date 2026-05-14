@@ -22,7 +22,7 @@ contract UtexoLZAdapterTest is Test {
         bytes32 indexed guid,
         uint256 sourceChainId,
         uint256 amountLD,
-        string  destinationChain,
+        uint256 destinationChainId,
         string  destinationAddress,
         uint256 operationId
     );
@@ -39,7 +39,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 sourceChainId,
         uint256 amountLD,
         uint256 nativeValue,
-        string  destinationChain,
+        uint256 destinationChainId,
         string  destinationAddress,
         uint256 operationId,
         bytes   reason
@@ -55,9 +55,10 @@ contract UtexoLZAdapterTest is Test {
     event TrustedEntrypointSet(bytes32 indexed entrypoint, bool trusted);
 
     // -- Constants ------------------------------------------------------------
-    uint32  constant SRC_EID         = 30101; // LZ endpoint id of the inbound packet
-    uint32  constant DST_EID         = 30110; // Arbitrum eid (outbound stub)
-    uint256 constant SOURCE_CHAIN_ID = 1;     // Default `block.chainid` carried by composeMsg
+    uint32  constant SRC_EID         = 30101;     // LZ endpoint id of the inbound packet
+    uint32  constant DST_EID         = 30110;     // Arbitrum eid (outbound stub)
+    uint256 constant SOURCE_CHAIN_ID = 1;         // Default `block.chainid` carried by composeMsg
+    uint256 constant RGB_CHAIN_ID    = 1_000_001; // Reserved-range id for RGB (non-EVM endpoint)
     uint256 constant NATIVE_FEE      = 0.01 ether;
 
     /// @dev Recognisable bytes32 used as `composeFrom` for every "honest" lzCompose
@@ -144,22 +145,22 @@ contract UtexoLZAdapterTest is Test {
         uint256 amount = 500e6;
         token.mint(address(adapter), amount);
 
-        string  memory destChain = 'rgb';
-        string  memory destAddr  = 'tb1q-dest-addr';
-        uint256 opId             = 42;
+        uint256 destChainId = RGB_CHAIN_ID;
+        string  memory destAddr = 'tb1q-dest-addr';
+        uint256 opId            = 42;
 
         bytes memory message = _encodeCompose(
             uint64(7),
             SRC_EID,
             amount,
             TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChain, destAddr, opId)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId)
         );
 
         bytes32 guid = keccak256('inbound-guid');
 
         vm.expectEmit(true, false, false, true, address(adapter));
-        emit ComposeFundsIn(guid, SOURCE_CHAIN_ID, amount, destChain, destAddr, opId);
+        emit ComposeFundsIn(guid, SOURCE_CHAIN_ID, amount, destChainId, destAddr, opId);
 
         vm.prank(endpoint);
         adapter.lzCompose{ value: 0.005 ether }(
@@ -175,7 +176,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(adapter)),   0,                'adapter cleared of tokens');
         assertEq(bridge.lastAmount(),                 amount,           'amount forwarded');
         assertEq(bridge.lastSourceChainId(),          SOURCE_CHAIN_ID,  'sourceChainId forwarded');
-        assertEq(bridge.lastDestinationChain(),       destChain,        'destChain forwarded');
+        assertEq(bridge.lastDestinationChainId(),     destChainId,      'destChainId forwarded');
         assertEq(bridge.lastDestinationAddress(),     destAddr,         'destAddr forwarded');
         assertEq(bridge.lastOperationId(),            opId,             'opId forwarded');
         assertEq(bridge.lastMsgValue(),               0.005 ether,      'msg.value forwarded');
@@ -219,11 +220,11 @@ contract UtexoLZAdapterTest is Test {
             SRC_EID,
             amount,
             TRUSTED_ENTRYPOINT_B32,
-            abi.encode(customChainId, string('a'), string('b'), uint256(0))
+            abi.encode(customChainId, RGB_CHAIN_ID, string('b'), uint256(0))
         );
 
         vm.expectEmit(true, false, false, true, address(adapter));
-        emit ComposeFundsIn(bytes32('g'), customChainId, amount, 'a', 'b', 0);
+        emit ComposeFundsIn(bytes32('g'), customChainId, amount, RGB_CHAIN_ID, 'b', 0);
 
         vm.prank(endpoint);
         adapter.lzCompose(address(oft), bytes32('g'), message, address(0), '');
@@ -238,7 +239,7 @@ contract UtexoLZAdapterTest is Test {
     function test_lzCompose_revertsIfNotEndpoint() public {
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, string('a'), string('b'), uint256(0))
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0))
         );
 
         vm.prank(makeAddr('attacker'));
@@ -249,7 +250,7 @@ contract UtexoLZAdapterTest is Test {
     function test_lzCompose_revertsIfFromIsNotOft() public {
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, string('a'), string('b'), uint256(0))
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0))
         );
 
         vm.prank(endpoint);
@@ -268,13 +269,13 @@ contract UtexoLZAdapterTest is Test {
         uint256 nativeValue = 0.005 ether;
         token.mint(address(adapter), amount);
 
-        string  memory destChain = 'rgb';
-        string  memory destAddr  = 'tb1q-stuck';
-        uint256 opId             = 99;
+        uint256 destChainId = RGB_CHAIN_ID;
+        string  memory destAddr = 'tb1q-stuck';
+        uint256 opId            = 99;
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChain, destAddr, opId)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId)
         );
 
         bytes32 guid = bytes32('stuck-guid');
@@ -284,7 +285,7 @@ contract UtexoLZAdapterTest is Test {
         // scalar/string fields, ignore `reason` byte-for-byte.
         vm.expectEmit(true, false, false, false, address(adapter));
         emit ComposeFundsInFailed(
-            guid, SOURCE_CHAIN_ID, amount, nativeValue, destChain, destAddr, opId, ''
+            guid, SOURCE_CHAIN_ID, amount, nativeValue, destChainId, destAddr, opId, ''
         );
 
         vm.prank(endpoint);
@@ -303,12 +304,12 @@ contract UtexoLZAdapterTest is Test {
 
         // Stuck record captured every field needed to drive a later refund.
         IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
-        assertEq(rec.amountLD,           amount,          'stuck amountLD');
-        assertEq(rec.nativeValue,        nativeValue,     'stuck nativeValue');
-        assertEq(rec.operationId,        opId,            'stuck opId');
-        assertEq(rec.sourceChainId,      SOURCE_CHAIN_ID, 'stuck sourceChainId');
-        assertEq(rec.destinationChain,   destChain,       'stuck destChain');
-        assertEq(rec.destinationAddress, destAddr,        'stuck destAddr');
+        assertEq(rec.amountLD,            amount,          'stuck amountLD');
+        assertEq(rec.nativeValue,         nativeValue,     'stuck nativeValue');
+        assertEq(rec.operationId,         opId,            'stuck opId');
+        assertEq(rec.sourceChainId,       SOURCE_CHAIN_ID, 'stuck sourceChainId');
+        assertEq(rec.destinationChainId,  destChainId,     'stuck destChainId');
+        assertEq(rec.destinationAddress,  destAddr,        'stuck destAddr');
     }
 
     function test_lzCompose_happyPath_doesNotCreateStuckRecord() public {
@@ -318,7 +319,7 @@ contract UtexoLZAdapterTest is Test {
         bytes32 guid = bytes32('happy-guid');
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('addr'), uint256(7))
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7))
         );
 
         vm.prank(endpoint);
@@ -540,12 +541,12 @@ contract UtexoLZAdapterTest is Test {
 
     function test_getStuckFunds_returnsZeroForUnknownGuid() public view {
         IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(bytes32('unknown'));
-        assertEq(rec.amountLD,           0,  'amountLD');
-        assertEq(rec.nativeValue,        0,  'nativeValue');
-        assertEq(rec.operationId,        0,  'operationId');
-        assertEq(rec.sourceChainId,      0,  'sourceChainId');
-        assertEq(rec.destinationChain,   '', 'destinationChain');
-        assertEq(rec.destinationAddress, '', 'destinationAddress');
+        assertEq(rec.amountLD,            0,  'amountLD');
+        assertEq(rec.nativeValue,         0,  'nativeValue');
+        assertEq(rec.operationId,         0,  'operationId');
+        assertEq(rec.sourceChainId,       0,  'sourceChainId');
+        assertEq(rec.destinationChainId,  0,  'destinationChainId');
+        assertEq(rec.destinationAddress,  '', 'destinationAddress');
     }
 
     function test_refundStuckFunds_happyPath_tokenAndNative() public {
@@ -553,7 +554,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 nativeValue = 0.02 ether;
         bytes32 guid        = bytes32('to-refund');
 
-        _createStuckRecord(guid, amount, nativeValue, 'rgb', 'tb1q-bad', 13);
+        _createStuckRecord(guid, amount, nativeValue, RGB_CHAIN_ID, 'tb1q-bad', 13);
 
         address payable refundTo = payable(makeAddr('refundTo'));
         uint256 tokenBalBefore   = token.balanceOf(refundTo);
@@ -580,7 +581,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 amount = 800e6;
         bytes32 guid   = bytes32('token-only');
 
-        _createStuckRecord(guid, amount, 0, 'rgb', 'addr', 1);
+        _createStuckRecord(guid, amount, 0, RGB_CHAIN_ID, 'addr', 1);
 
         address refundTo = makeAddr('refundTo');
 
@@ -594,7 +595,7 @@ contract UtexoLZAdapterTest is Test {
 
     function test_refundStuckFunds_revertsIfNotMultisigProxy() public {
         bytes32 guid = bytes32('any');
-        _createStuckRecord(guid, 1e6, 0, 'rgb', 'addr', 1);
+        _createStuckRecord(guid, 1e6, 0, RGB_CHAIN_ID, 'addr', 1);
 
         address attacker = makeAddr('attacker');
         vm.prank(attacker);
@@ -604,7 +605,7 @@ contract UtexoLZAdapterTest is Test {
 
     function test_refundStuckFunds_revertsOnZeroRecipient() public {
         bytes32 guid = bytes32('any');
-        _createStuckRecord(guid, 1e6, 0, 'rgb', 'addr', 1);
+        _createStuckRecord(guid, 1e6, 0, RGB_CHAIN_ID, 'addr', 1);
 
         vm.prank(multisigProxy);
         vm.expectRevert(IUtexoLZAdapter.InvalidRecipient.selector);
@@ -627,7 +628,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 nativeValue = 0.01 ether;
         bytes32 guid        = bytes32('native-fail');
 
-        _createStuckRecord(guid, amount, nativeValue, 'rgb', 'addr', 1);
+        _createStuckRecord(guid, amount, nativeValue, RGB_CHAIN_ID, 'addr', 1);
 
         RejectingRecipient rr = new RejectingRecipient();
 
@@ -723,7 +724,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, string('a'), string('b'), uint256(0))
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0))
         );
 
         vm.prank(endpoint);
@@ -743,7 +744,7 @@ contract UtexoLZAdapterTest is Test {
         bytes32 guid,
         uint256 amount,
         uint256 nativeValue,
-        string memory destChain,
+        uint256 destChainId,
         string memory destAddr,
         uint256 opId
     ) internal {
@@ -752,7 +753,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(0), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChain, destAddr, opId)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId)
         );
 
         vm.prank(endpoint);
