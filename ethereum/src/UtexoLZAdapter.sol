@@ -13,7 +13,7 @@ import { IOFT, SendParam }                  from '@layerzerolabs/lz-evm-oapp-v2/
 import { MessagingFee, MessagingReceipt }   from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
 
 import { IUtexoLZAdapter } from './interfaces/IUtexoLZAdapter.sol';
-import { IBridge }         from './interfaces/IBridge.sol';
+import { IBridge }         from '@utexo-smart-contracts/interfaces/IBridge.sol';
 
 /// @title UtexoLZAdapter
 /// @notice Bidirectional adapter between the Utexo `Bridge` (on Arbitrum) and the
@@ -178,10 +178,10 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         //    time — non-spoofable.
         (
             uint256 sourceChainId,
-            string memory destinationChain,
+            uint256 destinationChainId,
             string memory destinationAddress,
             uint256 operationId
-        ) = abi.decode(payload, (uint256, string, string, uint256));
+        ) = abi.decode(payload, (uint256, uint256, string, uint256));
 
         // 4. Approve Bridge to pull the USDT0 we just received via lzReceive.
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
@@ -189,21 +189,22 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         // 5. Forward the call. `msg.value` here is the value the LayerZero
         //    Executor forwarded into this lzCompose, sized off-chain by the
         //    backend to match the route's NATIVE commission (or 0 for
-        //    TOKEN-currency routes). Calls the adapter-only overload of
-        //    `Bridge.fundsIn` so the non-spoofable `sourceChainId` reaches
-        //    commission routing. If Bridge rejects the call (paused, duplicate
-        //    operationId, native-value mismatch, …) the funds are parked in
-        //    `_stuckFunds[_guid]` and recoverable off the hot path.
+        //    TOKEN-currency routes). Calls the adapter-only `fundsIn` overload
+        //    (5-arg, `onlyLZAdapter`-gated) so the non-spoofable
+        //    `sourceChainId` reaches commission routing. If Bridge rejects the
+        //    call (paused, duplicate operationId, native-value mismatch, …) the
+        //    funds are parked in `_stuckFunds[_guid]` and recoverable off the
+        //    hot path.
         try IBridge(bridge).fundsIn{ value: msg.value }(
             amountLD,
             sourceChainId,
-            destinationChain,
+            destinationChainId,
             destinationAddress,
             operationId
         ) {
             emit ComposeFundsIn(
                 _guid, sourceChainId, amountLD,
-                destinationChain, destinationAddress, operationId
+                destinationChainId, destinationAddress, operationId
             );
         } catch (bytes memory reason) {
             // Bridge did not pull the approved allowance — reset it so the
@@ -215,13 +216,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
                 nativeValue:        msg.value,
                 operationId:        operationId,
                 sourceChainId:      sourceChainId,
-                destinationChain:   destinationChain,
+                destinationChainId: destinationChainId,
                 destinationAddress: destinationAddress
             });
 
             emit ComposeFundsInFailed(
                 _guid, sourceChainId, amountLD, msg.value,
-                destinationChain, destinationAddress, operationId, reason
+                destinationChainId, destinationAddress, operationId, reason
             );
         }
     }

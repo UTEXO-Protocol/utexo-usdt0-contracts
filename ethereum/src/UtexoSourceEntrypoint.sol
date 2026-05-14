@@ -30,11 +30,14 @@ import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol'
 ///       • `dstEid` and `lzAdapter` are fixed at construction and cannot be
 ///         re-pointed at a different destination by the caller or anyone else.
 ///       • `composeMsg` is built by the entrypoint as
-///         `abi.encode(block.chainid, destinationChain, destinationAddress, operationId)`,
+///         `abi.encode(block.chainid, destinationChainId, destinationAddress, operationId)`,
 ///         where the destination fields are extracted from the caller-supplied
-///         `payload` blob via `abi.decode`. A malformed `payload` reverts here on
-///         the source chain so no LZ fee is ever paid for an un-decodable compose,
-///         and the `sourceChainId` part is non-spoofable.
+///         `payload` blob via `abi.decode`. All chain identifiers are `uint256`
+///         (real `block.chainid` for EVM endpoints, backend-assigned ids above
+///         the EVM range for non-EVM endpoints such as RGB = 1_000_001).
+///         A malformed `payload` reverts here on the source chain so no LZ fee is
+///         ever paid for an un-decodable compose, and the `sourceChainId` part
+///         is non-spoofable.
 ///       • LayerZero fee is re-quoted on-chain; surplus `msg.value` is refunded to
 ///         `msg.sender`.
 contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
@@ -110,14 +113,14 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
         //    on the source chain, before any LZ fee is paid — so honest deposits
         //    can never feed malformed bytes into `UtexoLZAdapter.lzCompose`.
         (
-            string memory destinationChain,
+            uint256 destinationChainId,
             string memory destinationAddress,
             uint256 operationId
-        ) = abi.decode(depositParams.payload, (string, string, uint256));
+        ) = abi.decode(depositParams.payload, (uint256, string, uint256));
 
         bytes memory composeMsg = abi.encode(
             block.chainid,
-            destinationChain,
+            destinationChainId,
             destinationAddress,
             operationId
         );
@@ -161,7 +164,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
             msg.sender,
             depositParams.amountLD,
             block.chainid,
-            destinationChain,
+            destinationChainId,
             destinationAddress,
             operationId
         );
@@ -177,14 +180,14 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
         // Mirror `deposit`'s payload handling so the quote covers the exact
         // composeMsg the actual send would carry.
         (
-            string memory destinationChain,
+            uint256 destinationChainId,
             string memory destinationAddress,
             uint256 operationId
-        ) = abi.decode(depositParams.payload, (string, string, uint256));
+        ) = abi.decode(depositParams.payload, (uint256, string, uint256));
 
         bytes memory composeMsg = abi.encode(
             block.chainid,
-            destinationChain,
+            destinationChainId,
             destinationAddress,
             operationId
         );

@@ -17,23 +17,26 @@ interface IUtexoLZAdapter {
     /// @notice Snapshot of an inbound compose payload whose `Bridge.fundsIn`
     ///         call reverted. Held on the adapter until federation governance
     ///         releases it via `refundStuckFunds`.
-    /// @param amountLD           USDT0 amount that the OFT minted to the adapter.
-    /// @param nativeValue        Native (wei) the LayerZero Executor forwarded
-    ///                           into `lzCompose` — non-zero on NATIVE-currency
-    ///                           commission routes, zero on TOKEN routes.
-    /// @param operationId        Backend-assigned operation id from `composeMsg`.
-    /// @param sourceChainId      EVM chain id of the source chain, set by
-    ///                           `UtexoSourceEntrypoint` from `block.chainid` at
-    ///                           deposit time. Non-spoofable for entrypoint-routed
-    ///                           deposits.
-    /// @param destinationChain   Final destination chain id (e.g. "rgb").
-    /// @param destinationAddress Final recipient on the destination chain.
+    /// @param amountLD            USDT0 amount that the OFT minted to the adapter.
+    /// @param nativeValue         Native (wei) the LayerZero Executor forwarded
+    ///                            into `lzCompose` — non-zero on NATIVE-currency
+    ///                            commission routes, zero on TOKEN routes.
+    /// @param operationId         Backend-assigned operation id from `composeMsg`.
+    /// @param sourceChainId       EVM chain id of the source chain, set by
+    ///                            `UtexoSourceEntrypoint` from `block.chainid` at
+    ///                            deposit time. Non-spoofable for entrypoint-routed
+    ///                            deposits.
+    /// @param destinationChainId  Final destination chain id (`uint256`): real
+    ///                            `block.chainid` values for EVM legs, reserved
+    ///                            namespace ids above the EVM range for non-EVM
+    ///                            endpoints (e.g. RGB = 1_000_001).
+    /// @param destinationAddress  Final recipient on the destination chain.
     struct StuckFunds {
         uint256 amountLD;
         uint256 nativeValue;
         uint256 operationId;
         uint256 sourceChainId;
-        string  destinationChain;
+        uint256 destinationChainId;
         string  destinationAddress;
     }
 
@@ -65,18 +68,19 @@ interface IUtexoLZAdapter {
     // =========================================================================
 
     /// @notice Emitted on a successful inbound `lzCompose` → `Bridge.fundsIn` call.
-    /// @param guid               LayerZero message guid.
-    /// @param sourceChainId      EVM chain id of the source chain (from `composeMsg`,
-    ///                           set by `UtexoSourceEntrypoint` from `block.chainid`).
-    /// @param amountLD           Amount of USDT0 forwarded into the Bridge (gross).
-    /// @param destinationChain   Target chain identifier (e.g. "rgb").
-    /// @param destinationAddress Target address on the destination chain.
-    /// @param operationId        Backend-assigned operation identifier.
+    /// @param guid                LayerZero message guid.
+    /// @param sourceChainId       EVM chain id of the source chain (from `composeMsg`,
+    ///                            set by `UtexoSourceEntrypoint` from `block.chainid`).
+    /// @param amountLD            Amount of USDT0 forwarded into the Bridge (gross).
+    /// @param destinationChainId  Target chain id (`uint256`; backend-assigned for
+    ///                            non-EVM destinations).
+    /// @param destinationAddress  Target address on the destination chain.
+    /// @param operationId         Backend-assigned operation identifier.
     event ComposeFundsIn(
         bytes32 indexed guid,
         uint256 sourceChainId,
         uint256 amountLD,
-        string  destinationChain,
+        uint256 destinationChainId,
         string  destinationAddress,
         uint256 operationId
     );
@@ -103,7 +107,7 @@ interface IUtexoLZAdapter {
         uint256 sourceChainId,
         uint256 amountLD,
         uint256 nativeValue,
-        string  destinationChain,
+        uint256 destinationChainId,
         string  destinationAddress,
         uint256 operationId,
         bytes   reason
