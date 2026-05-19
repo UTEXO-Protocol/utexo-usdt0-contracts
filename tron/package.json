@@ -7,7 +7,7 @@
     "test": "test"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tronbox test --network development",
     "compile": "tronbox compile",
     "clean": "rm -rf build"
   },
