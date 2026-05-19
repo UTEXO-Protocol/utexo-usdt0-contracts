@@ -1,5 +1,5 @@
 {
-  "../lib/utexo-smart-contracts": {
+  "../lib/bridge-smart-contracts": {
     "rev": "9a9a0b477f28c11c3bb7de6031bf0599180b927e"
   },
   "lib/LayerZero-v2": {

@@ -13,7 +13,7 @@ import { IOFT, SendParam }                  from '@layerzerolabs/lz-evm-oapp-v2/
 import { MessagingFee, MessagingReceipt }   from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
 
 import { IUtexoLZAdapter } from './interfaces/IUtexoLZAdapter.sol';
-import { IBridge }         from '@utexo-smart-contracts/interfaces/IBridge.sol';
+import { IBridge }         from '@bridge-smart-contracts/interfaces/IBridge.sol';
 
 /// @title UtexoLZAdapter
 /// @notice Bidirectional adapter between the Utexo `Bridge` (on Arbitrum) and the
