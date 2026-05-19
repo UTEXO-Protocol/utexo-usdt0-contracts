@@ -13,7 +13,7 @@ import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 ///         `UtexoLZAdapter.lzCompose` invokes. Not declared as `IBridge` —
 ///         Solidity dispatches by selector at runtime, so a matching function
 ///         signature on this stub is sufficient. The full upstream `IBridge`
-///         lives in the utexo-smart-contracts submodule and would require
+///         lives in the bridge-smart-contracts submodule and would require
 ///         stubbing many unrelated members (`fundsOut`, `setLZAdapter`, …)
 ///         that the adapter never calls in tests.
 contract MockBridge {

@@ -1,12 +1,13 @@
 [submodule "ethereum/lib/forge-std"]
 	path = ethereum/lib/forge-std
 	url = https://github.com/foundry-rs/forge-std
-[submodule "lib/utexo-smart-contracts"]
-	path = lib/utexo-smart-contracts
-	url = https://github.com/UTEXO-Protocol/utexo-smart-contracts.git
 [submodule "ethereum/lib/openzeppelin-contracts"]
 	path = ethereum/lib/openzeppelin-contracts
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts.git
 [submodule "ethereum/lib/LayerZero-v2"]
 	path = ethereum/lib/LayerZero-v2
 	url = https://github.com/LayerZero-Labs/LayerZero-v2.git
+[submodule "lib/bridge-smart-contracts"]
+	path = lib/bridge-smart-contracts
+	url = https://github.com/UTEXO-Protocol/bridge-smart-contracts.git
+	branch = main
