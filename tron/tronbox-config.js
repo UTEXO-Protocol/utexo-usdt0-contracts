@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const port = process.env.HOST_PORT || 9090;
+const port = process.env.HOST_PORT || 9095;
 
 module.exports = {
   networks: {
